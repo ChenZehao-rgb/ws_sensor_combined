@@ -6,10 +6,12 @@
         "limitSymbolsToIncludedHeaders": false
       },
       "includePath": [
+        "/home/sia/ws_sensor_combined/install/traj_offboard/include/**",
         "/home/sia/ws_sensor_combined/install/px4_ros_com/include/**",
         "/home/sia/ws_sensor_combined/install/px4_msgs/include/**",
         "/opt/ros/humble/include/**",
         "/home/sia/ws_sensor_combined/src/px4_ros_com/include/**",
+        "/home/sia/ws_sensor_combined/src/traj_offboard/include/**",
         "/usr/include/**"
       ],
       "name": "ros2",

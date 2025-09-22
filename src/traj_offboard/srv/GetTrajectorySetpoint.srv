@@ -1,0 +1,7 @@
+# request for current and target setpoints
+px4_msgs/TrajectorySetpoint current_state
+px4_msgs/TrajectorySetpoint target
+bool update_target
+---
+px4_msgs/TrajectorySetpoint trajectory_setpoint
+bool success
