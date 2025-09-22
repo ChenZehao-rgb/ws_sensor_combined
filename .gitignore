@@ -1,0 +1,5 @@
+# ROS 2 workspace artifacts (colcon)
+build/
+install/
+log/
+
