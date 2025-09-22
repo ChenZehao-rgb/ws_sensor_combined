@@ -42,9 +42,13 @@ class OffboardControlBridge : public rclcpp::Node {
         vehicle_cmd_pub_ = this->create_publisher<px4_msgs::msg::VehicleCommand>("/fmu/in/vehicle_command", 10);
 
         // UAV state subscriptions from px4_msgs (stored for reference)
-        // qos profile setting
-        rmw_qos_profile_t qos_profile = rmw_qos_profile_default;
-        auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
+        // QoS profile setting for PX4 compatibility - match PX4's exact settings
+        rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
+        qos_profile.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+        qos_profile.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
+        qos_profile.history = RMW_QOS_POLICY_HISTORY_KEEP_LAST;
+        qos_profile.depth = 5;
+        auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, qos_profile.depth), qos_profile);
 
         vehicle_local_position_sub_ = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
             "/fmu/out/vehicle_local_position", qos, std::bind(&OffboardControlBridge::VehicleLocalPositionCallback, this, std::placeholders::_1));
@@ -55,7 +59,9 @@ class OffboardControlBridge : public rclcpp::Node {
         // Service to set target for online trajectory generator
         set_target_srv_ = this->create_service<traj_offboard::srv::SetTarget>(
             "online_traj_generator/set_target", std::bind(&OffboardControlBridge::handle_set_target, this, std::placeholders::_1, std::placeholders::_2));
-
+        // Client to get current trajectory cmd from online trajectory generator
+        get_traj_setpoint_client_ = this->create_client<traj_offboard::srv::GetTrajectorySetpoint>(
+            "online_traj_generator/get_trajectory_setpoints");
         auto onTimer = [this]() -> void {
             if (offboard_setpoint_counter_ == 10) {
                 // Switch to offboard mode and arm after sending initial setpoints
@@ -65,6 +71,9 @@ class OffboardControlBridge : public rclcpp::Node {
             }
 
             publish_offboard_control_mode();
+            
+            // Publish trajectory setpoint from online generator
+            publish_trajectory_setpoint();
 
             if (offboard_setpoint_counter_ < 11) {
                 ++offboard_setpoint_counter_;
@@ -72,7 +81,7 @@ class OffboardControlBridge : public rclcpp::Node {
         };
 
         // Control timer: pair OffboardControlMode with a setpoint
-        timer_ = this->create_wall_timer(100ms, onTimer);
+        timer_ = this->create_wall_timer(10ms, onTimer);
     }
 
   private:
@@ -82,6 +91,17 @@ class OffboardControlBridge : public rclcpp::Node {
     sensor_msgs::msg::Imu uav_imu_;
     px4_msgs::msg::TrajectorySetpoint target_pose_;
     bool have_target_{false};
+    
+    // Takeoff sequence state management
+    enum class FlightState {
+        TAKEOFF,
+        HOVERING,
+        TRAJECTORY_FOLLOWING
+    };
+    FlightState flight_state_{FlightState::TAKEOFF};
+    bool takeoff_complete_{false};
+    static constexpr float TAKEOFF_HEIGHT = 5.0f;
+    static constexpr float POSITION_TOLERANCE = 0.2f;
 
     // ROS interfaces
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;
@@ -92,9 +112,8 @@ class OffboardControlBridge : public rclcpp::Node {
     rclcpp::Publisher<px4_msgs::msg::TrajectorySetpoint>::SharedPtr traj_setpoint_pub_;
     rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr vehicle_cmd_pub_;
 
-    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr targ_point_pub_;
     rclcpp::Service<traj_offboard::srv::SetTarget>::SharedPtr set_target_srv_;
-    rclcpp::Subscription<px4_msgs::msg::TrajectorySetpoint>::SharedPtr traj_cmd_sub_;
+    rclcpp::Client<traj_offboard::srv::GetTrajectorySetpoint>::SharedPtr get_traj_setpoint_client_;
 
     rclcpp::TimerBase::SharedPtr timer_;
     uint64_t offboard_setpoint_counter_{0U};
@@ -108,6 +127,8 @@ class OffboardControlBridge : public rclcpp::Node {
 	void publish_vehicle_command(uint16_t command, float param1 = 0.0f, float param2 = 0.0f);
     void handle_set_target(const traj_offboard::srv::SetTarget::Request::SharedPtr request,
                            traj_offboard::srv::SetTarget::Response::SharedPtr response);
+    void publish_trajectory_setpoint();
+    px4_msgs::msg::TrajectorySetpoint convertENUToNED(const px4_msgs::msg::TrajectorySetpoint &enu_setpoint) const;
 };
 
 void OffboardControlBridge::VehicleLocalPositionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
@@ -166,6 +187,244 @@ void OffboardControlBridge::publish_vehicle_command(uint16_t command, float para
     msg.from_external = true;
     msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
     vehicle_cmd_pub_->publish(msg);
+}
+
+px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::convertENUToNED(const px4_msgs::msg::TrajectorySetpoint &enu_setpoint) const {
+    px4_msgs::msg::TrajectorySetpoint ned_setpoint = enu_setpoint;
+
+    // Position
+    ned_setpoint.position[0] = enu_setpoint.position[1];
+    ned_setpoint.position[1] = enu_setpoint.position[0];
+    ned_setpoint.position[2] = -enu_setpoint.position[2];
+
+    // Velocity
+    ned_setpoint.velocity[0] = enu_setpoint.velocity[1];
+    ned_setpoint.velocity[1] = enu_setpoint.velocity[0];
+    ned_setpoint.velocity[2] = -enu_setpoint.velocity[2];
+
+    // Acceleration
+    ned_setpoint.acceleration[0] = enu_setpoint.acceleration[1];
+    ned_setpoint.acceleration[1] = enu_setpoint.acceleration[0];
+    ned_setpoint.acceleration[2] = -enu_setpoint.acceleration[2];
+
+    // Jerk
+    ned_setpoint.jerk[0] = enu_setpoint.jerk[1];
+    ned_setpoint.jerk[1] = enu_setpoint.jerk[0];
+    ned_setpoint.jerk[2] = -enu_setpoint.jerk[2];
+
+    static constexpr float HALF_PI = 1.57079632679f;
+    const float yaw_ned = HALF_PI - enu_setpoint.yaw;
+    ned_setpoint.yaw = std::atan2(std::sin(yaw_ned), std::cos(yaw_ned));
+    ned_setpoint.yawspeed = -enu_setpoint.yawspeed;
+
+    return ned_setpoint;
+}
+
+void OffboardControlBridge::publish_trajectory_setpoint() {
+    px4_msgs::msg::TrajectorySetpoint setpoint{};
+    
+    switch (flight_state_) {
+        case FlightState::TAKEOFF: {
+            // Send takeoff command to (0, 0, 5)
+            setpoint.position[0] = 0.0f;  // x = 0 (North in NED)
+            setpoint.position[1] = 0.0f;  // y = 0 (East in NED) 
+            setpoint.position[2] = -TAKEOFF_HEIGHT;  // z = -5 (Down in NED, so negative for up)
+            setpoint.velocity[0] = 0.0f;
+            setpoint.velocity[1] = 0.0f;
+            setpoint.velocity[2] = 0.0f;
+            setpoint.acceleration[0] = 0.0f;
+            setpoint.acceleration[1] = 0.0f;
+            setpoint.acceleration[2] = 0.0f;
+            setpoint.yaw = 0.0f;  // Face North
+            setpoint.yawspeed = 0.0f;
+            setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+            
+            // Check if takeoff is complete (within tolerance of target position)
+            float pos_error_x = std::abs(uav_pose_.pose.position.x - 0.0f);
+            float pos_error_y = std::abs(uav_pose_.pose.position.y - 0.0f);
+            float pos_error_z = std::abs(uav_pose_.pose.position.z - TAKEOFF_HEIGHT);
+            
+            if (pos_error_x < POSITION_TOLERANCE && 
+                pos_error_y < POSITION_TOLERANCE && 
+                pos_error_z < POSITION_TOLERANCE) {
+                takeoff_complete_ = true;
+                flight_state_ = FlightState::HOVERING;
+                RCLCPP_INFO(get_logger(), "Takeoff complete! Hovering at (0,0,%.1f) and waiting for trajectory commands", TAKEOFF_HEIGHT);
+            }
+            else{
+                // 5 secondly log takeoff progress, 1s, 2s, 3s, 4s
+                RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 1000, "Taking off... ");
+                
+            }
+            traj_setpoint_pub_->publish(setpoint);
+            break;
+        }
+        
+        case FlightState::HOVERING: {
+            // Check if we have a new target from the trajectory generator
+            if (get_traj_setpoint_client_ && get_traj_setpoint_client_->wait_for_service(std::chrono::milliseconds(1))) {
+                auto request = std::make_shared<traj_offboard::srv::GetTrajectorySetpoint::Request>();
+                
+                // Fill current state from vehicle position/attitude
+                request->current_state.position[0] = static_cast<float>(uav_pose_.pose.position.x);
+                request->current_state.position[1] = static_cast<float>(uav_pose_.pose.position.y);
+                request->current_state.position[2] = static_cast<float>(-uav_pose_.pose.position.z);
+                
+                double roll, pitch, yaw;
+                quat2RPY(uav_pose_.pose.orientation, roll, pitch, yaw);
+                request->current_state.yaw = static_cast<float>(yaw);
+                
+                // Set target if we have one
+                if (have_target_) {
+                    request->target = target_pose_;
+                    request->update_target = true;
+                    flight_state_ = FlightState::TRAJECTORY_FOLLOWING;
+                    RCLCPP_INFO(get_logger(), "New target received! Switching to trajectory following mode");
+                } else {
+                    request->update_target = false;
+                }
+                
+                auto future = get_traj_setpoint_client_->async_send_request(request);
+                if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+                    auto response = future.get();
+                    if (response->success) {
+                        // Publish the trajectory setpoint from the service
+                        auto traj_setpoint = convertENUToNED(response->trajectory_setpoint);
+                        traj_setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+                        traj_setpoint_pub_->publish(traj_setpoint);
+                        
+                        // Store for reference
+                        last_cmd_ = traj_setpoint;
+                        last_cmd_time_ = this->now();
+                        
+                        // Reset target flag after successful update
+                        if (have_target_) {
+                            have_target_ = false;
+                        }
+                    } else {
+                        // Hover at takeoff position if service fails
+                        setpoint.position[0] = 0.0f;
+                        setpoint.position[1] = 0.0f;
+                        setpoint.position[2] = -TAKEOFF_HEIGHT;
+                        setpoint.velocity[0] = 0.0f;
+                        setpoint.velocity[1] = 0.0f;
+                        setpoint.velocity[2] = 0.0f;
+                        setpoint.acceleration[0] = 0.0f;
+                        setpoint.acceleration[1] = 0.0f;
+                        setpoint.acceleration[2] = 0.0f;
+                        setpoint.yaw = 0.0f;
+                        setpoint.yawspeed = 0.0f;
+                        setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+                        traj_setpoint_pub_->publish(setpoint);
+                    }
+                } else {
+                    // Hover at takeoff position if service not ready
+                    setpoint.position[0] = 0.0f;
+                    setpoint.position[1] = 0.0f;
+                    setpoint.position[2] = -TAKEOFF_HEIGHT;
+                    setpoint.velocity[0] = 0.0f;
+                    setpoint.velocity[1] = 0.0f;
+                    setpoint.velocity[2] = 0.0f;
+                    setpoint.acceleration[0] = 0.0f;
+                    setpoint.acceleration[1] = 0.0f;
+                    setpoint.acceleration[2] = 0.0f;
+                    setpoint.yaw = 0.0f;
+                    setpoint.yawspeed = 0.0f;
+                    setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+                    traj_setpoint_pub_->publish(setpoint);
+                }
+            } else {
+                // Hover at takeoff position if service not available
+                setpoint.position[0] = 0.0f;
+                setpoint.position[1] = 0.0f;
+                setpoint.position[2] = -TAKEOFF_HEIGHT;
+                setpoint.velocity[0] = 0.0f;
+                setpoint.velocity[1] = 0.0f;
+                setpoint.velocity[2] = 0.0f;
+                setpoint.acceleration[0] = 0.0f;
+                setpoint.acceleration[1] = 0.0f;
+                setpoint.acceleration[2] = 0.0f;
+                setpoint.yaw = 0.0f;
+                setpoint.yawspeed = 0.0f;
+                setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+                traj_setpoint_pub_->publish(setpoint);
+            }
+            break;
+        }
+        
+        case FlightState::TRAJECTORY_FOLLOWING: {
+            // Normal trajectory following mode
+            if (get_traj_setpoint_client_ && get_traj_setpoint_client_->wait_for_service(std::chrono::milliseconds(1))) {
+                auto request = std::make_shared<traj_offboard::srv::GetTrajectorySetpoint::Request>();
+                
+                // Fill current state from vehicle position/attitude
+                request->current_state.position[0] = static_cast<float>(uav_pose_.pose.position.x);
+                request->current_state.position[1] = static_cast<float>(uav_pose_.pose.position.y);
+                request->current_state.position[2] = static_cast<float>(-uav_pose_.pose.position.z);
+                
+                double roll, pitch, yaw;
+                quat2RPY(uav_pose_.pose.orientation, roll, pitch, yaw);
+                request->current_state.yaw = static_cast<float>(yaw);
+                
+                // Set target if we have one
+                if (have_target_) {
+                    request->target = target_pose_;
+                    request->update_target = true;
+                } else {
+                    request->update_target = false;
+                }
+                
+                auto future = get_traj_setpoint_client_->async_send_request(request);
+                if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+                    auto response = future.get();
+                    if (response->success) {
+                        // Publish the trajectory setpoint from the service
+                        auto traj_setpoint = convertENUToNED(response->trajectory_setpoint);
+                        traj_setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+                        traj_setpoint_pub_->publish(traj_setpoint);
+                        
+                        // Store for reference
+                        last_cmd_ = traj_setpoint;
+                        last_cmd_time_ = this->now();
+                        
+                        // Reset target flag after successful update
+                        if (have_target_) {
+                            have_target_ = false;
+                        }
+                    } else {
+                        RCLCPP_WARN_THROTTLE(get_logger(), *this->get_clock(), 2000, 
+                            "Failed to get trajectory setpoint from online generator");
+                    }
+                }
+            } else {
+                // Fallback: publish last known command or hover command
+                if ((this->now() - last_cmd_time_).seconds() < 1.0 && last_cmd_.timestamp > 0) {
+                    // Republish last command with updated timestamp
+                    auto traj_setpoint = last_cmd_;
+                    traj_setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+                    traj_setpoint_pub_->publish(traj_setpoint);
+                } else {
+                    // Publish hover command at current position
+                    setpoint.position[0] = static_cast<float>(uav_pose_.pose.position.x);
+                    setpoint.position[1] = static_cast<float>(uav_pose_.pose.position.y);
+                    setpoint.position[2] = static_cast<float>(-uav_pose_.pose.position.z);
+                    setpoint.velocity[0] = 0.0f;
+                    setpoint.velocity[1] = 0.0f;
+                    setpoint.velocity[2] = 0.0f;
+                    setpoint.acceleration[0] = 0.0f;
+                    setpoint.acceleration[1] = 0.0f;
+                    setpoint.acceleration[2] = 0.0f;
+                    double roll, pitch, yaw;
+                    quat2RPY(uav_pose_.pose.orientation, roll, pitch, yaw);
+                    setpoint.yaw = static_cast<float>(yaw);
+                    setpoint.yawspeed = 0.0f;
+                    setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+                    traj_setpoint_pub_->publish(setpoint);
+                }
+            }
+            break;
+        }
+    }
 }
 
 int main(int argc, char *argv[]) {
