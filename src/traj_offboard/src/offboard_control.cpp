@@ -129,6 +129,8 @@ class OffboardControlBridge : public rclcpp::Node {
                            traj_offboard::srv::SetTarget::Response::SharedPtr response);
     void publish_trajectory_setpoint();
     px4_msgs::msg::TrajectorySetpoint convertENUToNED(const px4_msgs::msg::TrajectorySetpoint &enu_setpoint) const;
+    px4_msgs::msg::TrajectorySetpoint makePositionHoldSetpoint(float x, float y, float z, float yaw) const;
+    px4_msgs::msg::TrajectorySetpoint publishConvertedSetpoint(px4_msgs::msg::TrajectorySetpoint enu_setpoint);
 };
 
 void OffboardControlBridge::VehicleLocalPositionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
@@ -219,6 +221,33 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::convertENUToNED(const p
 
     return ned_setpoint;
 }
+px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makePositionHoldSetpoint(float x, float y, float z, float yaw) const {
+    px4_msgs::msg::TrajectorySetpoint setpoint{};
+    setpoint.position[0] = x;
+    setpoint.position[1] = y;
+    setpoint.position[2] = z;
+    setpoint.velocity[0] = 0.0f;
+    setpoint.velocity[1] = 0.0f;
+    setpoint.velocity[2] = 0.0f;
+    setpoint.acceleration[0] = 0.0f;
+    setpoint.acceleration[1] = 0.0f;
+    setpoint.acceleration[2] = 0.0f;
+    setpoint.jerk[0] = 0.0f;
+    setpoint.jerk[1] = 0.0f;
+    setpoint.jerk[2] = 0.0f;
+    setpoint.yaw = yaw;
+    setpoint.yawspeed = 0.0f;
+    return setpoint;
+}
+
+px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::publishConvertedSetpoint(px4_msgs::msg::TrajectorySetpoint enu_setpoint) {
+    enu_setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+    auto ned_setpoint = convertENUToNED(enu_setpoint);
+    traj_setpoint_pub_->publish(ned_setpoint);
+    return ned_setpoint;
+}
+
+
 
 void OffboardControlBridge::publish_trajectory_setpoint() {
     px4_msgs::msg::TrajectorySetpoint setpoint{};
@@ -226,9 +255,9 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
     switch (flight_state_) {
         case FlightState::TAKEOFF: {
             // Send takeoff command to (0, 0, 5)
-            setpoint.position[0] = 0.0f;  // x = 0 (North in NED)
-            setpoint.position[1] = 0.0f;  // y = 0 (East in NED) 
-            setpoint.position[2] = -TAKEOFF_HEIGHT;  // z = -5 (Down in NED, so negative for up)
+            setpoint.position[0] = 0.0f;  // x = 0 (East in ENU)
+            setpoint.position[1] = 0.0f;  // y = 0 (North in ENU)
+            setpoint.position[2] = TAKEOFF_HEIGHT;  // z = 5 (Up in ENU)
             setpoint.velocity[0] = 0.0f;
             setpoint.velocity[1] = 0.0f;
             setpoint.velocity[2] = 0.0f;
@@ -256,7 +285,7 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
                 RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 1000, "Taking off... ");
                 
             }
-            traj_setpoint_pub_->publish(setpoint);
+            traj_setpoint_pub_->publish(convertENUToNED(setpoint));
             break;
         }
         
@@ -265,10 +294,10 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
             if (get_traj_setpoint_client_ && get_traj_setpoint_client_->wait_for_service(std::chrono::milliseconds(1))) {
                 auto request = std::make_shared<traj_offboard::srv::GetTrajectorySetpoint::Request>();
                 
-                // Fill current state from vehicle position/attitude
+                // Fill current state from vehicle position/attitude, send as enu frame
                 request->current_state.position[0] = static_cast<float>(uav_pose_.pose.position.x);
                 request->current_state.position[1] = static_cast<float>(uav_pose_.pose.position.y);
-                request->current_state.position[2] = static_cast<float>(-uav_pose_.pose.position.z);
+                request->current_state.position[2] = static_cast<float>(uav_pose_.pose.position.z);
                 
                 double roll, pitch, yaw;
                 quat2RPY(uav_pose_.pose.orientation, roll, pitch, yaw);
@@ -305,7 +334,7 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
                         // Hover at takeoff position if service fails
                         setpoint.position[0] = 0.0f;
                         setpoint.position[1] = 0.0f;
-                        setpoint.position[2] = -TAKEOFF_HEIGHT;
+                        setpoint.position[2] = TAKEOFF_HEIGHT;
                         setpoint.velocity[0] = 0.0f;
                         setpoint.velocity[1] = 0.0f;
                         setpoint.velocity[2] = 0.0f;
@@ -315,13 +344,13 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
                         setpoint.yaw = 0.0f;
                         setpoint.yawspeed = 0.0f;
                         setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
-                        traj_setpoint_pub_->publish(setpoint);
+                        traj_setpoint_pub_->publish(convertENUToNED(setpoint));
                     }
                 } else {
                     // Hover at takeoff position if service not ready
                     setpoint.position[0] = 0.0f;
                     setpoint.position[1] = 0.0f;
-                    setpoint.position[2] = -TAKEOFF_HEIGHT;
+                    setpoint.position[2] = TAKEOFF_HEIGHT;
                     setpoint.velocity[0] = 0.0f;
                     setpoint.velocity[1] = 0.0f;
                     setpoint.velocity[2] = 0.0f;
@@ -331,7 +360,7 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
                     setpoint.yaw = 0.0f;
                     setpoint.yawspeed = 0.0f;
                     setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
-                    traj_setpoint_pub_->publish(setpoint);
+                    traj_setpoint_pub_->publish(convertENUToNED(setpoint));
                 }
             } else {
                 // Hover at takeoff position if service not available
@@ -347,7 +376,7 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
                 setpoint.yaw = 0.0f;
                 setpoint.yawspeed = 0.0f;
                 setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
-                traj_setpoint_pub_->publish(setpoint);
+                traj_setpoint_pub_->publish(convertENUToNED(setpoint));
             }
             break;
         }
@@ -360,7 +389,7 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
                 // Fill current state from vehicle position/attitude
                 request->current_state.position[0] = static_cast<float>(uav_pose_.pose.position.x);
                 request->current_state.position[1] = static_cast<float>(uav_pose_.pose.position.y);
-                request->current_state.position[2] = static_cast<float>(-uav_pose_.pose.position.z);
+                request->current_state.position[2] = static_cast<float>(uav_pose_.pose.position.z);
                 
                 double roll, pitch, yaw;
                 quat2RPY(uav_pose_.pose.orientation, roll, pitch, yaw);
@@ -407,7 +436,7 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
                     // Publish hover command at current position
                     setpoint.position[0] = static_cast<float>(uav_pose_.pose.position.x);
                     setpoint.position[1] = static_cast<float>(uav_pose_.pose.position.y);
-                    setpoint.position[2] = static_cast<float>(-uav_pose_.pose.position.z);
+                    setpoint.position[2] = static_cast<float>(uav_pose_.pose.position.z);
                     setpoint.velocity[0] = 0.0f;
                     setpoint.velocity[1] = 0.0f;
                     setpoint.velocity[2] = 0.0f;
@@ -419,7 +448,7 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
                     setpoint.yaw = static_cast<float>(yaw);
                     setpoint.yawspeed = 0.0f;
                     setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
-                    traj_setpoint_pub_->publish(setpoint);
+                    traj_setpoint_pub_->publish(convertENUToNED(setpoint));
                 }
             }
             break;
