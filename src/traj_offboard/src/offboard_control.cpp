@@ -8,6 +8,7 @@
 #include <px4_msgs/msg/offboard_control_mode.hpp>
 #include <px4_msgs/msg/trajectory_setpoint.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
+#include <px4_msgs/msg/home_position.hpp>
 
 #include <px4_msgs/msg/vehicle_attitude.hpp>
 #include <px4_msgs/msg/vehicle_imu.hpp>
@@ -56,6 +57,8 @@ class OffboardControlBridge : public rclcpp::Node {
             "/fmu/out/vehicle_attitude", qos, std::bind(&OffboardControlBridge::VehicleAttitudeCallback, this, std::placeholders::_1));
         vehicle_imu_sub_ = this->create_subscription<px4_msgs::msg::VehicleImu>(
             "/fmu/out/vehicle_imu", qos, std::bind(&OffboardControlBridge::VehicleImuCallback, this, std::placeholders::_1));
+        vehicle_home_position_sub_ = this->create_subscription<px4_msgs::msg::HomePosition>(
+            "/fmu/out/home_position", qos, std::bind(&OffboardControlBridge::VehicleHomePositionCallback, this, std::placeholders::_1));
         // Service to set target for online trajectory generator
         set_target_srv_ = this->create_service<traj_offboard::srv::SetTarget>(
             "online_traj_generator/set_target", std::bind(&OffboardControlBridge::handle_set_target, this, std::placeholders::_1, std::placeholders::_2));
@@ -73,6 +76,7 @@ class OffboardControlBridge : public rclcpp::Node {
     geometry_msgs::msg::PoseStamped uav_pose_;
     geometry_msgs::msg::TwistStamped uav_twist_;
     sensor_msgs::msg::Imu uav_imu_;
+    px4_msgs::msg::HomePosition uav_home_position_;
     px4_msgs::msg::TrajectorySetpoint target_pose_;
     bool update_target_{true}, has_target_{false};
     bool pending_request_{false};
@@ -91,6 +95,7 @@ class OffboardControlBridge : public rclcpp::Node {
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleAttitude>::SharedPtr vehicle_attitude_sub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleImu>::SharedPtr vehicle_imu_sub_;
+    rclcpp::Subscription<px4_msgs::msg::HomePosition>::SharedPtr vehicle_home_position_sub_;
 
     rclcpp::Publisher<px4_msgs::msg::OffboardControlMode>::SharedPtr offboard_ctrl_mode_pub_;
     rclcpp::Publisher<px4_msgs::msg::TrajectorySetpoint>::SharedPtr traj_setpoint_pub_;
@@ -108,6 +113,7 @@ class OffboardControlBridge : public rclcpp::Node {
     void VehicleLocalPositionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
 	void VehicleAttitudeCallback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg);
 	void VehicleImuCallback(const px4_msgs::msg::VehicleImu::SharedPtr msg);
+    void VehicleHomePositionCallback(const px4_msgs::msg::HomePosition::SharedPtr msg);
 	void publish_offboard_control_mode();
 	void publish_vehicle_command(uint16_t command, float param1 = 0.0f, float param2 = 0.0f);
     void handle_set_target(const traj_offboard::srv::SetTarget::Request::SharedPtr request,
@@ -147,6 +153,12 @@ void OffboardControlBridge::VehicleImuCallback(const px4_msgs::msg::VehicleImu::
 	uav_imu_.linear_acceleration.y = msg->delta_angle[0];
 	uav_imu_.linear_acceleration.z = -msg->delta_angle[2];
 }
+void OffboardControlBridge::VehicleHomePositionCallback(const px4_msgs::msg::HomePosition::SharedPtr msg) {
+    uav_home_position_.timestamp = msg->timestamp;
+    uav_home_position_.x = msg->y;
+    uav_home_position_.y = msg->x;
+    uav_home_position_.z = -msg->z;
+}
 void OffboardControlBridge::publish_offboard_control_mode() {
     px4_msgs::msg::OffboardControlMode msg{};
     msg.position = true;
@@ -184,9 +196,9 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::convertENUToNED(const p
     px4_msgs::msg::TrajectorySetpoint ned_setpoint = enu_setpoint;
 
     // Position
-    ned_setpoint.position[0] = enu_setpoint.position[1];
-    ned_setpoint.position[1] = enu_setpoint.position[0];
-    ned_setpoint.position[2] = -enu_setpoint.position[2];
+    ned_setpoint.position[0] = enu_setpoint.position[1] + uav_home_position_.y;
+    ned_setpoint.position[1] = enu_setpoint.position[0] + uav_home_position_.x;
+    ned_setpoint.position[2] = -enu_setpoint.position[2] + uav_home_position_.z;
 
     // Velocity
     ned_setpoint.velocity[0] = enu_setpoint.velocity[1];
