@@ -76,5 +76,8 @@ install(TARGETS online_traj_node offboard_control_bridge_node
 install(DIRECTORY include/
   DESTINATION include)
 
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME})
+
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()

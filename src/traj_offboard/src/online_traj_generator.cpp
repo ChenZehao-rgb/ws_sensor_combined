@@ -35,6 +35,7 @@ public:
 private:
   // State sources
   px4_msgs::msg::TrajectorySetpoint current_state_, traj_target_;
+  px4_msgs::msg::TrajectorySetpoint last_command_state_;
   // ROS 2 interfaces
 
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr ruckig_state_pub_;
@@ -43,6 +44,7 @@ private:
 
   rclcpp::Service<traj_offboard::srv::GetTrajectorySetpoint>::SharedPtr get_traj_setpoints_srv_;
   bool isFirstTraj_{true};
+  bool hasLastCommand_{false};
 
   void updateTrajGeneratorState() {
     state_.position[0] = current_state_.position[0];
@@ -57,7 +59,7 @@ private:
 
     state_.effort[0] = current_state_.acceleration[0];
     state_.effort[1] = current_state_.acceleration[1];
-    state_.effort[2] = 9.81 - current_state_.acceleration[2];
+    state_.effort[2] = current_state_.acceleration[2];
   }
 
   void updateTrajGeneratorTarg() {
@@ -65,6 +67,15 @@ private:
     targ_.position[1] = traj_target_.position[1];
     targ_.position[2] = traj_target_.position[2];
     targ_.position[3] = traj_target_.yaw;
+
+    targ_.velocity[0] = traj_target_.velocity[0];
+    targ_.velocity[1] = traj_target_.velocity[1];
+    targ_.velocity[2] = traj_target_.velocity[2];
+    targ_.velocity[3] = traj_target_.yawspeed;
+
+    targ_.effort[0] = traj_target_.acceleration[0];
+    targ_.effort[1] = traj_target_.acceleration[1];
+    targ_.effort[2] = traj_target_.acceleration[2];
   }
 
   void updateTrajectorySetpointResponse(px4_msgs::msg::TrajectorySetpoint &traj_setpoint) {
@@ -80,29 +91,27 @@ private:
 
     traj_setpoint.acceleration[0] = command_.effort[0];
     traj_setpoint.acceleration[1] = command_.effort[1];
-    traj_setpoint.acceleration[2] = -command_.effort[2];
+    traj_setpoint.acceleration[2] = command_.effort[2];
   }
 
   void handleGetTrajSetpoints(const traj_offboard::srv::GetTrajectorySetpoint::Request::SharedPtr request,
 							 traj_offboard::srv::GetTrajectorySetpoint::Response::SharedPtr response) {
-	current_state_ = request->current_state;
-	traj_target_ = request->target;
+    if (isFirstTraj_ || !hasLastCommand_) {
+      current_state_ = request->current_state;
+      isFirstTraj_ = false;
+      RCLCPP_INFO(get_logger(), "OnlineTrajGenerator: first trajectory request received");
+    } else {
+      current_state_ = last_command_state_;
+    }
+    traj_target_ = request->target;
+
     updateTrajGeneratorState();
 
 #if TRAJ_OFFBOARD_HAVE_RUCKIG
-    if (isFirstTraj_) {
-      for (std::size_t id = 0; id < STATE_NUM; id++) {
-        ruckigInput_.current_position[id] = state_.position[id];
-        ruckigInput_.current_velocity[id] = state_.velocity[id];
-        ruckigInput_.current_acceleration[id] = state_.effort[id];
-      }
-      isFirstTraj_ = false;
-    } else {
-      for (std::size_t id = 0; id < STATE_NUM; id++) {
-        ruckigInput_.current_position[id] = command_.position[id];
-        ruckigInput_.current_velocity[id] = command_.velocity[id];
-        ruckigInput_.current_acceleration[id] = command_.effort[id];
-      }
+    for (std::size_t id = 0; id < STATE_NUM; id++) {
+      ruckigInput_.current_position[id] = state_.position[id];
+      ruckigInput_.current_velocity[id] = state_.velocity[id];
+      ruckigInput_.current_acceleration[id] = state_.effort[id];
     }
 #endif
 
@@ -110,12 +119,9 @@ private:
       updateTrajGeneratorTarg();
 #if TRAJ_OFFBOARD_HAVE_RUCKIG
       for (std::size_t id = 0; id < STATE_NUM; id++) {
-        ruckigInput_.current_position[id] = state_.position[id];
-      }
-      for (std::size_t id = 0; id < STATE_NUM; id++) {
         ruckigInput_.target_position[id] = targ_.position[id];
-        ruckigInput_.target_velocity[id] = 0.0;
-        ruckigInput_.target_acceleration[id] = 0.0;
+        ruckigInput_.target_velocity[id] = targ_.velocity[id];
+        ruckigInput_.target_acceleration[id] = targ_.effort[id];
       }
 #endif
     }
@@ -135,6 +141,8 @@ private:
     ruckig_command_pub_->publish(command_);
 
     updateTrajectorySetpointResponse(response->trajectory_setpoint);
+    last_command_state_ = response->trajectory_setpoint;
+    hasLastCommand_ = true;
     response->success = true;
     return;
   }

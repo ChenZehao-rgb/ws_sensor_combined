@@ -65,7 +65,7 @@ class OffboardControlBridge : public rclcpp::Node {
             "online_traj_generator/get_trajectory_setpoints", rmw_qos_profile_services_default, client_callback_group_);
 
         // Control timer: pair OffboardControlMode with a setpoint
-        timer_ = this->create_wall_timer(10ms, std::bind(&OffboardControlBridge::controlLoopOnTimer, this));
+        timer_ = this->create_wall_timer(50ms, std::bind(&OffboardControlBridge::controlLoopOnTimer, this));
     }
 
   private:
@@ -74,7 +74,7 @@ class OffboardControlBridge : public rclcpp::Node {
     geometry_msgs::msg::TwistStamped uav_twist_;
     sensor_msgs::msg::Imu uav_imu_;
     px4_msgs::msg::TrajectorySetpoint target_pose_;
-    bool update_target_{false}, has_target_{false};
+    bool update_target_{true}, has_target_{false};
     bool pending_request_{false};
     
     // Takeoff sequence state management
@@ -118,6 +118,7 @@ class OffboardControlBridge : public rclcpp::Node {
     px4_msgs::msg::TrajectorySetpoint publishConvertedSetpoint(px4_msgs::msg::TrajectorySetpoint enu_setpoint);
     bool isArrivedAtPosition(px4_msgs::msg::TrajectorySetpoint setpoint, float tolerance);
     void controlLoopOnTimer();
+    void publish_takeoff_setpoint(px4_msgs::msg::TrajectorySetpoint takeoff_setpoint);
 };
 
 void OffboardControlBridge::VehicleLocalPositionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
@@ -289,6 +290,44 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
     update_target_ = false; // reset after sending to traj generator
 }
 
+void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySetpoint takeoff_setpoint) {
+    px4_msgs::msg::TrajectorySetpoint current_state;
+    while (!get_traj_setpoint_client_->service_is_ready()) {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "traj generator service not available…");
+        return;
+    }
+    if(pending_request_) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "Previous request still pending, skipping this cycle");
+        return;
+    }
+    current_state.position[0] = uav_pose_.pose.position.x;
+    current_state.position[1] = uav_pose_.pose.position.y;
+    current_state.position[2] = uav_pose_.pose.position.z;
+    double roll, pitch, yaw;
+    quat2RPY(uav_pose_.pose.orientation, roll, pitch, yaw);
+    current_state.yaw = yaw;
+
+    auto request = std::make_shared<traj_offboard::srv::GetTrajectorySetpoint::Request>();
+    request->current_state = current_state;
+    request->target = takeoff_setpoint;
+    request->update_target = true;
+    pending_request_ = true;
+
+    auto result = get_traj_setpoint_client_->async_send_request(request, [this](rclcpp::Client<traj_offboard::srv::GetTrajectorySetpoint>::SharedFuture resp_fut) {
+        pending_request_ = false;
+        try {
+            auto resp = resp_fut.get();
+            last_cmd_ = publishConvertedSetpoint(resp->trajectory_setpoint);
+            last_cmd_time_ = this->now();
+        } catch (const std::exception& e) {
+            RCLCPP_ERROR(this->get_logger(), "get_trajectory_setpoint failed: %s", e.what());
+            // hold last command
+            last_cmd_ = publishConvertedSetpoint(last_cmd_);
+            last_cmd_time_ = this->now();
+        }
+    });
+    update_target_ = false; // reset after sending to traj generator
+}
 void OffboardControlBridge::controlLoopOnTimer() {
     if (offboard_setpoint_counter_ == 10) {
         // Switch to offboard mode and arm after sending initial setpoints
@@ -306,7 +345,8 @@ void OffboardControlBridge::controlLoopOnTimer() {
     switch (flight_state_) {
         case FlightState::TAKEOFF: {
             auto HoverSetpoint = makePositionHoldSetpoint(0.0f, 0.0f, TAKEOFF_HEIGHT, 0.0f);
-            last_cmd_ = publishConvertedSetpoint(HoverSetpoint);
+            // last_cmd_ = publishConvertedSetpoint(HoverSetpoint);
+            publish_takeoff_setpoint(HoverSetpoint);
             if (isArrivedAtPosition(HoverSetpoint, POSITION_TOLERANCE)) {
                 takeoff_complete_ = true;
                 flight_state_ = FlightState::TRAJECTORY_FOLLOWING;
