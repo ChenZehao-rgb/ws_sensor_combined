@@ -140,9 +140,9 @@ void OffboardControlBridge::VehicleLocalPositionCallback(const px4_msgs::msg::Ve
     uav_pose_.header.stamp = this->now();
     uav_pose_.header.frame_id = "map"; // ENU frame
     // PX4 NED to ROS ENU frame
-    uav_pose_.pose.position.x = msg->y;
-    uav_pose_.pose.position.y = msg->x;
-    uav_pose_.pose.position.z = -msg->z;
+    uav_pose_.pose.position.x = msg->y - uav_home_position_.y;
+    uav_pose_.pose.position.y = msg->x - uav_home_position_.x;
+    uav_pose_.pose.position.z = -msg->z + uav_home_position_.z;
 }
 void OffboardControlBridge::VehicleAttitudeCallback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg) {
     // PX4 NED to ROS ENU frame
@@ -164,9 +164,10 @@ void OffboardControlBridge::VehicleImuCallback(const px4_msgs::msg::VehicleImu::
 }
 void OffboardControlBridge::VehicleHomePositionCallback(const px4_msgs::msg::HomePosition::SharedPtr msg) {
     uav_home_position_.timestamp = msg->timestamp;
-    uav_home_position_.x = msg->y;
-    uav_home_position_.y = msg->x;
-    uav_home_position_.z = -msg->z;
+    uav_home_position_.x = msg->x;
+    uav_home_position_.y = msg->y;
+    uav_home_position_.z = msg->z;
+    RCLCPP_INFO(this->get_logger(), "Received home position: [%.2f, %.2f, %.2f]", uav_home_position_.x, uav_home_position_.y, uav_home_position_.z);
 }
 void OffboardControlBridge::OffboardStateCallback(const std_msgs::msg::String::SharedPtr msg) {
     offboard_state_ = *msg;
@@ -208,8 +209,8 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::convertENUToNED(const p
     px4_msgs::msg::TrajectorySetpoint ned_setpoint = enu_setpoint;
 
     // Position
-    ned_setpoint.position[0] = enu_setpoint.position[1] + uav_home_position_.y;
-    ned_setpoint.position[1] = enu_setpoint.position[0] + uav_home_position_.x;
+    ned_setpoint.position[0] = enu_setpoint.position[1] + uav_home_position_.x;
+    ned_setpoint.position[1] = enu_setpoint.position[0] + uav_home_position_.y;
     ned_setpoint.position[2] = -enu_setpoint.position[2] + uav_home_position_.z;
 
     // Velocity
@@ -264,8 +265,8 @@ bool OffboardControlBridge::isArrivedAtPosition(px4_msgs::msg::TrajectorySetpoin
     float pos_error_x = std::abs(uav_pose_.pose.position.x - setpoint.position[0]);
     float pos_error_y = std::abs(uav_pose_.pose.position.y - setpoint.position[1]);
     float pos_error_z = std::abs(uav_pose_.pose.position.z - setpoint.position[2]);
-    
-    if (pos_error_x < tolerance && pos_error_y < tolerance && pos_error_z < tolerance) 
+
+    if (pos_error_x < tolerance && pos_error_y < tolerance && pos_error_z < tolerance)
         return true;
     else
         return false;
@@ -365,7 +366,7 @@ void OffboardControlBridge::controlLoopOnTimer() {
             break;
         }
         case FlightState::TAKEOFF: {
-            if (offboard_setpoint_counter_ >= 10) {
+            if (offboard_setpoint_counter_ == 10) {
                 // Switch to offboard mode and arm after sending initial setpoints
                 publish_vehicle_command(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
                 publish_vehicle_command(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0f);
