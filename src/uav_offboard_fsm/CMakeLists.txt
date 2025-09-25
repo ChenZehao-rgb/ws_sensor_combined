@@ -16,6 +16,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(traj_offboard REQUIRED)
+find_package(std_msgs REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -37,13 +38,22 @@ ament_target_dependencies(uav_offboard_fsm_node
   px4_msgs
   tf2
   traj_offboard
+  std_msgs
+)
+
+add_executable(uav_keyboard_control_node src/keyboard_control_node.cpp)
+ament_target_dependencies(uav_keyboard_control_node
+  rclcpp
+  std_msgs
 )
 
 target_include_directories(uav_offboard_fsm_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 
-install(TARGETS uav_offboard_fsm_node
+install(TARGETS
+  uav_offboard_fsm_node
+  uav_keyboard_control_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY include/
