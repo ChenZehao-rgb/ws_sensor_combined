@@ -84,6 +84,9 @@ void KeyboardControlNode::keyboardLoop() {
         case 'G':
             publishCommand("GOTOPOINT");
             break;
+        case 'R':
+            publishCommand("TRAJECTORY_TRACKING");
+            break;
         default:
             break;
         }
