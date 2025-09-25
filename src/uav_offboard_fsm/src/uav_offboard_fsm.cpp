@@ -26,8 +26,6 @@ class UavOffboardFsm : public rclcpp::Node {
 		control_command_sub_ = this->create_subscription<std_msgs::msg::String>(
 			"/uav_offboard_fsm/control_command", 10,
 			std::bind(&UavOffboardFsm::handleControlCommand, this, std::placeholders::_1));
-
-		publish_offboard_state();
     }
 
   private:
@@ -43,7 +41,6 @@ class UavOffboardFsm : public rclcpp::Node {
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr offboard_state_pub_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr control_command_sub_;
     rclcpp::Client<traj_offboard::srv::SetTarget>::SharedPtr set_target_client_;
-    rclcpp::CallbackGroup::SharedPtr client_callback_group_;
 
     rclcpp::TimerBase::SharedPtr timer_;
     void controlLoopOnTimer();
@@ -57,7 +54,7 @@ class UavOffboardFsm : public rclcpp::Node {
 void UavOffboardFsm::publish_offboard_state()
 {
 	auto msg = std_msgs::msg::String();
-	msg.data = controlStateToString(control_state_.load());
+	msg.data = "TAKEOFF";
 	offboard_state_pub_->publish(msg);
 }
 void UavOffboardFsm::set_target_once()
@@ -67,7 +64,7 @@ void UavOffboardFsm::set_target_once()
 		return;
 	}
 	auto request = std::make_shared<traj_offboard::srv::SetTarget::Request>();
-	request->target.position = {10.0, 10.0, 5.0}; // Example target position
+	request->target.position = {10.0, 10.0, 8.0}; // Example target position
 	request->target.yaw = 0.0;
 
 	auto result = set_target_client_->async_send_request(request, [this](rclcpp::Client<traj_offboard::srv::SetTarget>::SharedFuture resp_fut) {
@@ -164,7 +161,6 @@ void UavOffboardFsm::handleControlCommand(const std_msgs::msg::String::SharedPtr
 		return;
 	}
 	control_state_.store(new_state);
-	publish_offboard_state();
 	RCLCPP_INFO(this->get_logger(), "Control state set via command: %s",
 		controlStateToString(new_state).c_str());
 }
