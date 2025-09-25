@@ -110,8 +110,8 @@ private:
 #if TRAJ_OFFBOARD_HAVE_RUCKIG
     for (std::size_t id = 0; id < STATE_NUM; id++) {
       ruckigInput_.current_position[id] = state_.position[id];
-      ruckigInput_.current_velocity[id] = state_.velocity[id];
-      ruckigInput_.current_acceleration[id] = state_.effort[id];
+      // ruckigInput_.current_velocity[id] = state_.velocity[id];
+      // ruckigInput_.current_acceleration[id] = state_.effort[id];
     }
 #endif
 

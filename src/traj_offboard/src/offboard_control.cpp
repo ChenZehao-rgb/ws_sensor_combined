@@ -353,6 +353,7 @@ void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySe
     update_target_ = false; // reset after sending to traj generator
 }
 void OffboardControlBridge::controlLoopOnTimer() {
+    publish_offboard_control_mode();
     switch (flight_state_) {
         case FlightState::WAITINGFORCOMMAND: {
             if(offboard_state_.data == "TAKEOFF") {
@@ -364,15 +365,12 @@ void OffboardControlBridge::controlLoopOnTimer() {
             break;
         }
         case FlightState::TAKEOFF: {
-            if (offboard_setpoint_counter_ == 10) {
+            if (offboard_setpoint_counter_ >= 10) {
                 // Switch to offboard mode and arm after sending initial setpoints
                 publish_vehicle_command(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
                 publish_vehicle_command(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0f);
                 RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 2000, "Offboard & arm commands sent");
             }
-
-            publish_offboard_control_mode();
-
             if (offboard_setpoint_counter_ < 11) {
                 ++offboard_setpoint_counter_;
             }

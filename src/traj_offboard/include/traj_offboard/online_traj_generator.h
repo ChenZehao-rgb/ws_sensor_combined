@@ -6,7 +6,7 @@
 #include <vector>
 #include <algorithm>
 
-#if __has_include(<ruckig/ruckig.hpp>) && __has_include(<format>)
+#if __has_include(<ruckig/ruckig.hpp>)
 #  include <ruckig/ruckig.hpp>
 #  define TRAJ_OFFBOARD_HAVE_RUCKIG 1
 #else
@@ -48,6 +48,11 @@ public:
     targ_.effort = {0.0, 0.0, 0.0, 0.0};
 
     initRuckig();
+#if TRAJ_OFFBOARD_HAVE_RUCKIG
+    RCLCPP_INFO(rclcpp::get_logger("traj_offboard"), "Ruckig OTG enabled (STATE_NUM=%d, Ts=%.3f s)", STATE_NUM, Ts);
+#else
+    RCLCPP_WARN(rclcpp::get_logger("traj_offboard"), "Ruckig headers not found; using simple fallback trajectory generator");
+#endif
   }
 
   virtual ~TrajGenerator() = default;

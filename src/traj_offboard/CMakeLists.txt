@@ -18,6 +18,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(tf2 REQUIRED)
+find_package(ruckig REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -49,6 +50,7 @@ ament_target_dependencies(online_traj_node
   px4_msgs
   tf2
 )
+target_link_libraries(online_traj_node ruckig::ruckig)
 add_dependencies(online_traj_node ${PROJECT_NAME}__rosidl_generator_cpp)
 rosidl_target_interfaces(online_traj_node ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_include_directories(online_traj_node PUBLIC

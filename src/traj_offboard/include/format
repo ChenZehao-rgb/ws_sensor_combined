@@ -1,0 +1,74 @@
+#pragma once
+
+#include <array>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <type_traits>
+
+namespace std {
+
+namespace detail {
+	template <typename T>
+	auto to_string_like(T&& value) -> std::string {
+		if constexpr (std::is_same_v<std::decay_t<T>, std::string>) {
+			return value;
+		} else if constexpr (std::is_same_v<std::decay_t<T>, const char*>) {
+			return std::string(value);
+		} else if constexpr (std::is_same_v<std::decay_t<T>, char*>) {
+			return std::string(value);
+		} else if constexpr (std::is_same_v<std::decay_t<T>, std::string_view>) {
+			return std::string(value);
+		} else {
+			std::ostringstream oss;
+			oss << value;
+			return oss.str();
+		}
+	}
+}
+
+template <typename... Args>
+std::string format(std::string_view fmt, Args&&... args) {
+	std::array<std::string, sizeof...(Args)> arg_strings{detail::to_string_like(std::forward<Args>(args))...};
+	std::string result;
+	result.reserve(fmt.size() + arg_strings.size() * 8);
+	std::size_t arg_index = 0;
+
+	for (std::size_t i = 0; i < fmt.size(); ++i) {
+		const char ch = fmt[i];
+		if (ch == '{') {
+			if (i + 1 < fmt.size() && fmt[i + 1] == '{') {
+				result.push_back('{');
+				++i;
+				continue;
+			}
+			if (i + 1 >= fmt.size() || fmt[i + 1] != '}') {
+				throw std::runtime_error("Unsupported format placeholder");
+			}
+			if (arg_index >= arg_strings.size()) {
+				throw std::runtime_error("format argument index out of range");
+			}
+			result.append(arg_strings[arg_index++]);
+			++i; // skip closing brace
+		} else if (ch == '}') {
+			if (i + 1 < fmt.size() && fmt[i + 1] == '}') {
+				result.push_back('}');
+				++i;
+				continue;
+			}
+			throw std::runtime_error("Invalid closing brace in format string");
+		} else {
+			result.push_back(ch);
+		}
+	}
+
+	if (arg_index != arg_strings.size()) {
+		throw std::runtime_error("Too many arguments for format string");
+	}
+
+	return result;
+}
+
+} // namespace std
+
