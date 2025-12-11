@@ -5,6 +5,5 @@ log/
 bag/
 
 # VS Code workspace files
-.vscode/browse.vc.db*
-.vscode/ipch/
+.vscode/
 
