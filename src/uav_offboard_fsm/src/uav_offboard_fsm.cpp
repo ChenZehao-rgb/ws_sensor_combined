@@ -34,6 +34,9 @@ class UavOffboardFsm : public rclcpp::Node {
 		ruckig_state_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
 			"/online_traj_generator/ruckig_state", 10,
 			std::bind(&UavOffboardFsm::handleRuckigState, this, std::placeholders::_1));
+		current_state_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
+			"/rapid_traj/current_state", 10,
+			std::bind(&UavOffboardFsm::handleRuckigState, this, std::placeholders::_1));
 
 		trajectory_waypoints_ = {
 			{0.0, 0.0, 5.0, 0.0},
@@ -61,7 +64,8 @@ class UavOffboardFsm : public rclcpp::Node {
             SELFCHECK,
             TAKEOFF,
             GOTOPOINT,
-			TRAJECTORY_TRACKING
+			TRAJECTORY_TRACKING,
+			CIRCLE_TRACKING
     };
     std::atomic<ControlState> control_state_{ControlState::SELFCHECK};
     ControlState previous_state_{ControlState::SELFCHECK};
@@ -70,6 +74,7 @@ class UavOffboardFsm : public rclcpp::Node {
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr control_command_sub_;
     rclcpp::Client<traj_offboard::srv::SetTarget>::SharedPtr set_target_client_;
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr ruckig_state_sub_;
+	rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr current_state_sub_;
 
 	std::vector<Waypoint> trajectory_waypoints_;
 	std::optional<sensor_msgs::msg::JointState> latest_state_;
@@ -78,14 +83,28 @@ class UavOffboardFsm : public rclcpp::Node {
     bool waypoint_command_in_flight_{false};
     rclcpp::Time last_waypoint_sent_time_{};
 
+	std::vector<Waypoint> circle_waypoints_;
+	std::size_t current_circle_index_{0};
+	bool circle_command_in_flight_{false};
+	rclcpp::Time last_circle_sent_time_{};
+
+	double circle_center_x_{0.0};
+	double circle_center_y_{0.0};
+	double circle_radius_{5.0};
+	double circle_height_{5.0};
+	int circle_points_{24};
+
     rclcpp::TimerBase::SharedPtr timer_;
     void controlLoopOnTimer();
 	void publish_offboard_state();
 	void set_target_once();
 	void handleTrajectoryTracking(bool state_changed);
+	void handleCircleTracking(bool state_changed);
 	void resetTrajectoryTracking();
+	void resetCircleTracking();
 	bool isWaypointReached(const Waypoint &waypoint, const sensor_msgs::msg::JointState &state);
 	void sendWaypointTarget(const Waypoint &waypoint);
+	void sendCircleTarget(const Waypoint &waypoint, std::size_t waypoint_index);
 	static double wrapAngle(double angle);
 	static std::string controlStateToString(ControlState state);
 	static std::optional<ControlState> controlStateFromString(const std::string &state);
@@ -157,6 +176,12 @@ void UavOffboardFsm::controlLoopOnTimer()
 			handleTrajectoryTracking(state_changed);
 			break;
 		}
+		case ControlState::CIRCLE_TRACKING:
+		{
+			RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "State: CIRCLE_TRACKING");
+			handleCircleTracking(state_changed);
+			break;
+		}
 		default:
 			break;
 	}
@@ -213,11 +238,82 @@ void UavOffboardFsm::handleTrajectoryTracking(bool state_changed)
 	}
 }
 
+void UavOffboardFsm::handleCircleTracking(bool state_changed)
+{
+	if (state_changed) {
+		resetCircleTracking();
+	}
+
+	if (circle_waypoints_.empty()) {
+		RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Circle waypoints not ready");
+		return;
+	}
+
+	std::optional<sensor_msgs::msg::JointState> state_copy;
+	{
+		std::lock_guard<std::mutex> lock(latest_state_mutex_);
+		state_copy = latest_state_;
+	}
+
+	// if (!state_copy) {
+	// 	RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "Waiting for state feedback before circle tracking");
+	// 	return;
+	// }
+
+	if (current_circle_index_ >= circle_waypoints_.size()) {
+		RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 5000, "Circle completed; holding last point");
+		return;
+	}
+
+	if (!circle_command_in_flight_) {
+		sendCircleTarget(circle_waypoints_[current_circle_index_], current_circle_index_);
+		return;
+	}
+
+	if (!isWaypointReached(circle_waypoints_[current_circle_index_], *state_copy)) {
+		return;
+	}
+
+	RCLCPP_INFO(this->get_logger(),
+		"Circle waypoint %zu reached (%.2f, %.2f, %.2f, %.2f rad)",
+		current_circle_index_,
+		circle_waypoints_[current_circle_index_].x,
+		circle_waypoints_[current_circle_index_].y,
+		circle_waypoints_[current_circle_index_].z,
+		circle_waypoints_[current_circle_index_].yaw);
+	current_circle_index_++;
+	circle_command_in_flight_ = false;
+	if (current_circle_index_ >= circle_waypoints_.size()) {
+		RCLCPP_INFO(this->get_logger(), "Circle trajectory completed");
+	}
+}
+
 void UavOffboardFsm::resetTrajectoryTracking()
 {
 	current_waypoint_index_ = 0;
 	waypoint_command_in_flight_ = false;
 	last_waypoint_sent_time_ = this->now();
+}
+
+void UavOffboardFsm::resetCircleTracking()
+{
+	circle_waypoints_.clear();
+	current_circle_index_ = 0;
+	circle_command_in_flight_ = false;
+	last_circle_sent_time_ = this->now();
+
+	constexpr double kPi = 3.14159265358979323846;
+	constexpr double kHalfPi = kPi / 2.0;
+	for (int i = 0; i < circle_points_; ++i) {
+		const double angle = 2.0 * kPi * static_cast<double>(i) / static_cast<double>(circle_points_);
+		const double x = circle_center_x_ + circle_radius_ * std::cos(angle);
+		const double y = circle_center_y_ + circle_radius_ * std::sin(angle);
+		const double yaw = wrapAngle(angle + kHalfPi);
+		circle_waypoints_.push_back({x, y, circle_height_, yaw});
+	}
+	if (!circle_waypoints_.empty()) {
+		circle_waypoints_.push_back(circle_waypoints_.front());
+	}
 }
 
 bool UavOffboardFsm::isWaypointReached(const Waypoint &waypoint, const sensor_msgs::msg::JointState &state)
@@ -280,6 +376,46 @@ void UavOffboardFsm::sendWaypointTarget(const Waypoint &waypoint)
 		});
 }
 
+void UavOffboardFsm::sendCircleTarget(const Waypoint &waypoint, std::size_t waypoint_index)
+{
+	if (!set_target_client_->service_is_ready()) {
+		RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "Set target service not available…");
+		return;
+	}
+
+	auto request = std::make_shared<traj_offboard::srv::SetTarget::Request>();
+	request->target.position = {
+		static_cast<float>(waypoint.x),
+		static_cast<float>(waypoint.y),
+		static_cast<float>(waypoint.z)
+	};
+	request->target.velocity = {0.0f, 0.0f, 0.0f};
+	request->target.acceleration = {0.0f, 0.0f, 0.0f};
+	request->target.yaw = static_cast<float>(waypoint.yaw);
+	request->target.yawspeed = 0.0f;
+
+	circle_command_in_flight_ = true;
+	last_circle_sent_time_ = this->now();
+
+	set_target_client_->async_send_request(
+		request,
+		[this, waypoint_index](rclcpp::Client<traj_offboard::srv::SetTarget>::SharedFuture resp_fut) {
+			try {
+				auto resp = resp_fut.get();
+				if (!resp->success) {
+					RCLCPP_ERROR(this->get_logger(), "Failed to send circle waypoint %zu to trajectory generator", waypoint_index);
+					circle_command_in_flight_ = false;
+				}
+				else {
+					RCLCPP_INFO(this->get_logger(), "Circle waypoint %zu dispatched to trajectory generator", waypoint_index);
+				}
+			} catch (const std::exception &e) {
+				RCLCPP_ERROR(this->get_logger(), "Service call failed for circle waypoint %zu: %s", waypoint_index, e.what());
+				circle_command_in_flight_ = false;
+			}
+		});
+}
+
 double UavOffboardFsm::wrapAngle(double angle)
 {
 	return std::atan2(std::sin(angle), std::cos(angle));
@@ -297,6 +433,8 @@ std::string UavOffboardFsm::controlStateToString(ControlState state)
 			return "GOTOPOINT";
 		case ControlState::TRAJECTORY_TRACKING:
 			return "TRAJECTORY_TRACKING";
+		case ControlState::CIRCLE_TRACKING:
+			return "CIRCLE_TRACKING";
 	}
 	return "UNKNOWN";
 }
@@ -318,6 +456,9 @@ std::optional<UavOffboardFsm::ControlState> UavOffboardFsm::controlStateFromStri
 	}
 	if (upper == "TRAJECTORY_TRACKING" || upper == "R") {
 		return ControlState::TRAJECTORY_TRACKING;
+	}
+	if (upper == "CIRCLE_TRACKING" || upper == "CIRCLE" || upper == "C") {
+		return ControlState::CIRCLE_TRACKING;
 	}
 	return std::nullopt;
 }

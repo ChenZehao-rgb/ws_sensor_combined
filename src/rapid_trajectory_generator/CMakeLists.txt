@@ -8,6 +8,12 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(px4_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(traj_offboard REQUIRED)
+find_package(tf2 REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -37,8 +43,26 @@ add_executable(rapid_trajectory_test_node
 target_compile_features(rapid_trajectory_test_node PUBLIC cxx_std_14)
 ament_target_dependencies(rapid_trajectory_test_node
   rclcpp
+  sensor_msgs
 )
 target_link_libraries(rapid_trajectory_test_node
+  rapid_trajectory_generator
+)
+
+add_executable(rapid_trajectory_simulator_node
+  src/rapid_trajectory_simulator_node.cpp
+)
+target_compile_features(rapid_trajectory_simulator_node PUBLIC cxx_std_14)
+ament_target_dependencies(rapid_trajectory_simulator_node
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  px4_msgs
+  std_msgs
+  traj_offboard
+  tf2
+)
+target_link_libraries(rapid_trajectory_simulator_node
   rapid_trajectory_generator
 )
 
@@ -52,8 +76,14 @@ install(TARGETS rapid_trajectory_generator
 install(TARGETS rapid_trajectory_test_node
   DESTINATION lib/${PROJECT_NAME}
 )
+install(TARGETS rapid_trajectory_simulator_node
+  DESTINATION lib/${PROJECT_NAME}
+)
 install(DIRECTORY include/ DESTINATION include)
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}
+)
 ament_export_targets(export_rapid_trajectory_generator HAS_LIBRARY_TARGET)
-ament_export_dependencies()
+ament_export_dependencies(rclcpp sensor_msgs)
 
 ament_package()

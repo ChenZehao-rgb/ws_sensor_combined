@@ -6,8 +6,11 @@
 #include <deque>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include <sensor_msgs/msg/joint_state.hpp>
+
 
 using RapidQuadrocopterTrajectoryGenerator::RapidTrajectoryGenerator;
 
@@ -52,12 +55,19 @@ int main(int argc, char ** argv)
       sample_timer_ = create_wall_timer(
         std::chrono::duration<double>(sample_period_),
         std::bind(&RapidTrajectoryStreamer::onSampleTimer, this));
+        current_state_pub_ = this->create_publisher<sensor_msgs::msg::JointState>(
+			        "/rapid_traj/current_state", 10);
 
       // 示例：预填充多个目标点，确保起步时就有前瞻，避免第一段刹停
       enqueueTarget(::Vec3(1.0, 0.0, 0.5));
       enqueueTarget(::Vec3(1.5, 1.5, 1.0));
       enqueueTarget(::Vec3(0.5, 2.0, 1.5));
       enqueueTarget(::Vec3(0.0, 0.0, 1.0));
+
+      // 示例：在运行中收到传感器更新，修正未来点
+      sensor_update_timer_ = create_wall_timer(
+        2s,
+        std::bind(&RapidTrajectoryStreamer::injectSensorUpdate, this));
     }
 
   private:
@@ -71,6 +81,33 @@ int main(int argc, char ** argv)
     void enqueueTarget(const ::Vec3 & target)
     {
       target_queue_.push_back(target);
+    }
+
+    // 根据实时传感器结果更新未来目标，按索引覆盖已有队列，不够则追加
+    void upsertTargetsFromSensor(const std::vector<::Vec3> & sensed_targets)
+    {
+      for (std::size_t i = 0; i < sensed_targets.size(); ++i)
+      {
+        if (i < target_queue_.size())
+        {
+          target_queue_[i] = sensed_targets[i];
+        }
+        else
+        {
+          target_queue_.push_back(sensed_targets[i]);
+        }
+      }
+    }
+
+    // demo：在“点2”附近收到新感知，修正点3并添加点4
+    void injectSensorUpdate()
+    {
+      upsertTargetsFromSensor({
+        ::Vec3(0.6, 1.8, 1.6),  // 更新的“下一个点”（原点3）
+        ::Vec3(0.2, 0.2, 1.2)   // 新的下下个点
+      });
+      sensor_update_timer_->cancel();
+      RCLCPP_INFO(get_logger(), "Sensor update injected: updated next targets");
     }
 
     void onSampleTimer()
@@ -92,6 +129,21 @@ int main(int argc, char ** argv)
       current_state_.position = active_traj_->GetPosition(t);
       current_state_.velocity = active_traj_->GetVelocity(t);
       current_state_.acceleration = active_traj_->GetAcceleration(t);
+      current_point_pub_.header.stamp = now;
+      current_point_pub_.name = {"x", "y", "z", "vx", "vy", "vz", "ax", "ay", "az"};
+      current_point_pub_.position = {
+        current_state_.position.x,
+        current_state_.position.y,
+        current_state_.position.z};
+      current_point_pub_.velocity = {
+        current_state_.velocity.x,
+        current_state_.velocity.y,
+        current_state_.velocity.z}; 
+      current_point_pub_.effort = {
+        current_state_.acceleration.x,
+        current_state_.acceleration.y,
+        current_state_.acceleration.z};
+      current_state_pub_->publish(current_point_pub_);
 
       RCLCPP_INFO(
         get_logger(),
@@ -248,6 +300,7 @@ int main(int argc, char ** argv)
     }
 
     StateSample current_state_;
+    sensor_msgs::msg::JointState current_point_pub_;
     const ::Vec3 gravity_;
     const double sample_period_;
     const double cruise_speed_;
@@ -258,6 +311,8 @@ int main(int argc, char ** argv)
     double segment_duration_{0.0};
     std::deque<::Vec3> target_queue_;
     rclcpp::TimerBase::SharedPtr sample_timer_;
+    rclcpp::TimerBase::SharedPtr sensor_update_timer_;
+    rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr current_state_pub_;
   };
 
   rclcpp::spin(std::make_shared<RapidTrajectoryStreamer>());

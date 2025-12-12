@@ -52,7 +52,7 @@ void KeyboardControlNode::startKeyboardListener() {
     stop_keyboard_.store(false);
     keyboard_thread_ = std::thread(&KeyboardControlNode::keyboardLoop, this);
     RCLCPP_INFO(this->get_logger(),
-                "Keyboard control enabled: Shift+S (self-check), Shift+T (takeoff), Shift+G (goto point).");
+                "Keyboard control enabled: Shift+S (self-check), Shift+T (takeoff), Shift+G (goto point), Shift+R (trajectory tracking), Shift+C (circle tracking).");
 }
 
 void KeyboardControlNode::stopKeyboardListener() {
@@ -87,6 +87,8 @@ void KeyboardControlNode::keyboardLoop() {
         case 'R':
             publishCommand("TRAJECTORY_TRACKING");
             break;
+        case 'C':
+            publishCommand("CIRCLE_TRACKING");
         default:
             break;
         }
