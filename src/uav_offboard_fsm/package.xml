@@ -15,6 +15,7 @@
   <depend>px4_msgs</depend>
   <depend>tf2</depend>
   <depend>traj_offboard</depend>
+  <depend>std_msgs</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

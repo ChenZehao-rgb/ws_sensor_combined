@@ -7,3 +7,5 @@ bag/
 # VS Code workspace files
 .vscode/
 
+# Python cache in launch folders
+**/launch/__pycache__/

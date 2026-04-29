@@ -167,7 +167,9 @@ void OffboardControlBridge::VehicleHomePositionCallback(const px4_msgs::msg::Hom
     uav_home_position_.x = msg->x;
     uav_home_position_.y = msg->y;
     uav_home_position_.z = msg->z;
-    RCLCPP_INFO(this->get_logger(), "Received home position: [%.2f, %.2f, %.2f]", uav_home_position_.x, uav_home_position_.y, uav_home_position_.z);
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                         "Received home position: [%.2f, %.2f, %.2f]",
+                         uav_home_position_.x, uav_home_position_.y, uav_home_position_.z);
 }
 void OffboardControlBridge::OffboardStateCallback(const std_msgs::msg::String::SharedPtr msg) {
     offboard_state_ = *msg;

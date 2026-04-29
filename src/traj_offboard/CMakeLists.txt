@@ -72,7 +72,13 @@ target_include_directories(offboard_control_bridge_node PUBLIC
 add_dependencies(offboard_control_bridge_node ${PROJECT_NAME}__rosidl_generator_cpp)
 rosidl_target_interfaces(offboard_control_bridge_node ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
-install(TARGETS online_traj_node offboard_control_bridge_node
+add_executable(mock_px4_sim_node src/mock_px4_sim_node.cpp)
+ament_target_dependencies(mock_px4_sim_node
+  rclcpp
+  px4_msgs
+)
+
+install(TARGETS online_traj_node offboard_control_bridge_node mock_px4_sim_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY include/
