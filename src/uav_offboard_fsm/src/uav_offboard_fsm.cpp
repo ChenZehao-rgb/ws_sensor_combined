@@ -169,6 +169,16 @@ class UavOffboardFsm : public rclcpp::Node {
 
         timer_ = create_wall_timer(std::chrono::milliseconds(control_loop_period_ms_),
                                    std::bind(&UavOffboardFsm::controlLoopOnTimer, this));
+
+        RCLCPP_INFO(get_logger(),
+                    "FSM ready | command_topic=%s offboard_state_topic=%s status_topic=%s set_target_service=%s",
+                    control_command_topic.c_str(), offboard_state_topic.c_str(),
+                    status_topic.c_str(), set_target_service.c_str());
+        RCLCPP_INFO(get_logger(),
+                    "FSM mission defaults | takeoff=(%.2f, %.2f, %.2f, yaw %.2f) mission_enabled=%s require_distance_sensor=%s",
+                    takeoff_waypoint_.x, takeoff_waypoint_.y, takeoff_waypoint_.z,
+                    takeoff_waypoint_.yaw, mission_enabled_ ? "true" : "false",
+                    require_distance_sensor_ ? "true" : "false");
     }
 
     // 返回 MultiThreadedExecutor 的线程数量，main() 用它按参数创建执行器。
@@ -420,7 +430,7 @@ void UavOffboardFsm::controlLoopOnTimer()
 void UavOffboardFsm::onStateEntry(ControlState state)
 {
     clearActiveTarget();
-    RCLCPP_INFO(get_logger(), "FSM entered %s", stateToString(state).c_str());
+    RCLCPP_INFO(get_logger(), "FSM state -> %s", stateToString(state).c_str());
 
     switch (state) {
         case ControlState::SELF_CHECK:
@@ -477,22 +487,21 @@ void UavOffboardFsm::transitionTo(ControlState state)
 // 自检状态处理：等待键盘 SELF_CHECK 指令，检查任务使能和可选测距传感器状态，通过后允许起飞。
 void UavOffboardFsm::handleSelfCheck()
 {
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_, "State: SELF_CHECK");
     if (!self_check_requested_ && !ready_for_takeoff_) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "Waiting for keyboard SELF_CHECK command");
+                             "SELF_CHECK | waiting for command SELF_CHECK");
         return;
     }
 
     if (ready_for_takeoff_) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "Self check passed; waiting for keyboard TAKEOFF command");
+                             "SELF_CHECK | passed; waiting for command TAKEOFF");
         return;
     }
 
     if (!isSelfCheckOK()) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "Self check pending: mission_enabled=%s distance_sensor_ok=%s",
+                             "SELF_CHECK | pending mission_enabled=%s distance_sensor_ok=%s",
                              mission_enabled_ ? "true" : "false",
                              hasFreshDistanceSensor() ? "true" : "false");
         return;
@@ -500,27 +509,29 @@ void UavOffboardFsm::handleSelfCheck()
 
     ready_for_takeoff_ = true;
     self_check_requested_ = false;
-    RCLCPP_INFO(get_logger(), "Self check passed, ready_for_takeoff=1; waiting for keyboard TAKEOFF command");
+    RCLCPP_INFO(get_logger(), "SELF_CHECK complete | next=TAKEOFF");
 }
 
 // 起飞状态处理：确认已经自检通过，并等待无人机到达起飞航点，到达后进入悬停状态。
 void UavOffboardFsm::handleTakeoff()
 {
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_, "State: TAKEOFF");
     if (!ready_for_takeoff_) {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_, "Takeoff blocked before self check");
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
+                             "TAKEOFF blocked | self-check is not complete");
         transitionTo(ControlState::SELF_CHECK);
         return;
     }
 
     if (!isUAVTakeoff()) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), takeoff_wait_log_throttle_ms_,
-                             "Waiting for takeoff completion");
+                             "TAKEOFF | waiting for vehicle at target=(%.2f, %.2f, %.2f, yaw %.2f)",
+                             takeoff_waypoint_.x, takeoff_waypoint_.y,
+                             takeoff_waypoint_.z, takeoff_waypoint_.yaw);
         return;
     }
 
     ready_for_transit_ = true;
-    RCLCPP_INFO(get_logger(), "Takeoff completed, ready_for_transit=1");
+    RCLCPP_INFO(get_logger(), "TAKEOFF complete | next=HOVERING");
     transitionTo(ControlState::HOVERING);
 }
 
@@ -528,7 +539,7 @@ void UavOffboardFsm::handleTakeoff()
 void UavOffboardFsm::handleHovering()
 {
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
-                         "State: HOVERING, waiting for transit/search/approach/retreat/home/manual command");
+                         "HOVERING | ready for TRANSIT, SEARCH, APPROACH, RETREAT, BACK_HOME, or MANUAL");
 }
 
 // 前往任务区域处理：按 transit_waypoints 参数中的航点顺序飞行，全部到达后标记已到达任务区。
@@ -536,14 +547,14 @@ void UavOffboardFsm::handleTransitToArea()
 {
     if (!ready_for_transit_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "TRANSIT_TO_AREA blocked until ready_for_transit=1");
+                             "TRANSIT_TO_AREA blocked | takeoff is not complete");
         transitionTo(ControlState::HOVERING);
         return;
     }
 
     if (handleWaypointSequence(transit_waypoints_, transit_index_, "transit")) {
         is_arrived_task_aera_ = true;
-        RCLCPP_INFO(get_logger(), "Transit completed, is_arrived_task_aera=1");
+        RCLCPP_INFO(get_logger(), "TRANSIT_TO_AREA complete | arrived_task_area=true");
         transitionTo(ControlState::HOVERING);
     }
 }
@@ -553,14 +564,14 @@ void UavOffboardFsm::handleSearchAdjust()
 {
     if (!is_arrived_task_aera_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "SEARCH_ADJUST blocked until is_arrived_task_aera=1");
+                             "SEARCH_ADJUST blocked | task area has not been reached");
         transitionTo(ControlState::HOVERING);
         return;
     }
 
     if (handleWaypointSequence(search_waypoints_, search_index_, "search adjust")) {
         adjust_completed_ = true;
-        RCLCPP_INFO(get_logger(), "Search adjust completed, adjust_completed=1");
+        RCLCPP_INFO(get_logger(), "SEARCH_ADJUST complete | adjust_completed=true");
         transitionTo(ControlState::HOVERING);
     }
 }
@@ -570,7 +581,7 @@ void UavOffboardFsm::handleApproachPlant()
 {
     if (!adjust_completed_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "APPROACH_PLANT blocked until adjust_completed=1");
+                             "APPROACH_PLANT blocked | search adjust is not complete");
         transitionTo(ControlState::HOVERING);
         return;
     }
@@ -579,14 +590,14 @@ void UavOffboardFsm::handleApproachPlant()
         *latest_distance_m_ <= approach_target_distance_m_ + approach_distance_tolerance_m_) {
         approach_completed_ = true;
         clearActiveTarget();
-        RCLCPP_INFO(get_logger(), "Approach completed by distance sensor, approach_completed=1");
+        RCLCPP_INFO(get_logger(), "APPROACH_PLANT complete | source=distance_sensor");
         transitionTo(ControlState::HOVERING);
         return;
     }
 
     if (handleWaypointSequence(approach_waypoints_, approach_index_, "approach")) {
         approach_completed_ = true;
-        RCLCPP_INFO(get_logger(), "Approach completed by target arrival, approach_completed=1");
+        RCLCPP_INFO(get_logger(), "APPROACH_PLANT complete | source=target_arrival");
         transitionTo(ControlState::HOVERING);
     }
 }
@@ -596,7 +607,7 @@ void UavOffboardFsm::handleRetreat()
 {
     if (!approach_completed_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "RETREAT blocked until approach_completed=1");
+                             "RETREAT blocked | approach is not complete");
         transitionTo(ControlState::HOVERING);
         return;
     }
@@ -604,7 +615,7 @@ void UavOffboardFsm::handleRetreat()
     if (handleWaypointSequence(retreat_waypoints_, retreat_index_, "retreat")) {
         adjust_completed_ = true;
         approach_completed_ = false;
-        RCLCPP_INFO(get_logger(), "Retreat completed, adjust_completed=1 approach_completed=0");
+        RCLCPP_INFO(get_logger(), "RETREAT complete | adjust_completed=true approach_completed=false");
         transitionTo(ControlState::HOVERING);
     }
 }
@@ -614,14 +625,14 @@ void UavOffboardFsm::handleBackHome()
 {
     if (!ready_for_transit_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "BACK_HOME blocked until takeoff is complete");
+                             "BACK_HOME blocked | takeoff is not complete");
         transitionTo(ControlState::HOVERING);
         return;
     }
 
     if (handleWaypointSequence(back_home_waypoints_, back_home_index_, "back home")) {
         back_home_ = true;
-        RCLCPP_INFO(get_logger(), "Back home completed, back_home=1");
+        RCLCPP_INFO(get_logger(), "BACK_HOME complete | back_home=true");
         transitionTo(ControlState::HOVERING);
     }
 }
@@ -631,7 +642,7 @@ void UavOffboardFsm::handleManualOperation()
 {
     if (manual_command_.confirmations < manual_confirmations_required_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "MANUAL_OPERA waiting for confirmation (%d/%d)",
+                             "MANUAL_OPERA | waiting for CONFIRM (%d/%d)",
                              manual_command_.confirmations, manual_confirmations_required_);
         return;
     }
@@ -646,14 +657,14 @@ void UavOffboardFsm::handleManualOperation()
         setActiveTarget(target);
         manual_command_.target_prepared = true;
         RCLCPP_INFO(get_logger(),
-                    "Manual target accepted after confirmation: dx=%.2f dy=%.2f dz=%.2f dyaw=%.2f",
+                    "MANUAL_OPERA target accepted | delta=(%.2f, %.2f, %.2f, dyaw %.2f)",
                     manual_command_.dx, manual_command_.dy, manual_command_.dz,
                     manual_command_.dyaw);
     }
 
     if (handleActiveTargetReached()) {
         manual_command_ = {};
-        RCLCPP_INFO(get_logger(), "Manual operation completed");
+        RCLCPP_INFO(get_logger(), "MANUAL_OPERA complete | next=HOVERING");
         transitionTo(ControlState::HOVERING);
     }
 }
@@ -664,7 +675,7 @@ bool UavOffboardFsm::handleWaypointSequence(std::vector<Waypoint> & waypoints,
                                             const std::string & label)
 {
     if (waypoints.empty()) {
-        RCLCPP_WARN(get_logger(), "%s waypoint list is empty; treating stage as complete", label.c_str());
+        RCLCPP_WARN(get_logger(), "Waypoint stage skipped | stage=%s reason=empty_list", label.c_str());
         return true;
     }
 
@@ -674,7 +685,8 @@ bool UavOffboardFsm::handleWaypointSequence(std::vector<Waypoint> & waypoints,
 
     if (!active_target_) {
         setActiveTarget(waypoints[index]);
-        RCLCPP_INFO(get_logger(), "Dispatching %s waypoint %zu/%zu: %.2f %.2f %.2f yaw %.2f",
+        RCLCPP_INFO(get_logger(),
+                    "Waypoint dispatch | stage=%s index=%zu/%zu target=(%.2f, %.2f, %.2f, yaw %.2f)",
                     label.c_str(), index + 1, waypoints.size(), active_target_->x,
                     active_target_->y, active_target_->z, active_target_->yaw);
     }
@@ -683,7 +695,7 @@ bool UavOffboardFsm::handleWaypointSequence(std::vector<Waypoint> & waypoints,
         return false;
     }
 
-    RCLCPP_INFO(get_logger(), "%s waypoint %zu reached", label.c_str(), index + 1);
+    RCLCPP_INFO(get_logger(), "Waypoint reached | stage=%s index=%zu", label.c_str(), index + 1);
     ++index;
     clearActiveTarget();
     return index >= waypoints.size();
@@ -708,7 +720,7 @@ bool UavOffboardFsm::handleActiveTargetReached()
 
     if (!waypoint) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "Waiting for UAV position feedback");
+                             "Target active | waiting for fresh UAV position feedback");
         return false;
     }
 
@@ -741,7 +753,7 @@ void UavOffboardFsm::sendActiveTarget()
     }
     if (!set_target_client_->service_is_ready()) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "traj_offboard set_target service not available");
+                             "Target pending | service not available: online_traj_generator/set_target");
         return;
     }
 
@@ -773,15 +785,16 @@ void UavOffboardFsm::sendActiveTarget()
                 const auto resp = resp_fut.get();
                 if (resp->success) {
                     active_target_sent_ = true;
-                    RCLCPP_INFO(get_logger(), "Target sent to traj_offboard: %.2f %.2f %.2f yaw %.2f",
+                    RCLCPP_INFO(get_logger(),
+                                "Target sent | service=online_traj_generator/set_target target=(%.2f, %.2f, %.2f, yaw %.2f)",
                                 target.x, target.y, target.z, target.yaw);
                 } else {
                     active_target_sent_ = false;
-                    RCLCPP_ERROR(get_logger(), "traj_offboard rejected target");
+                    RCLCPP_ERROR(get_logger(), "Target rejected | service=online_traj_generator/set_target");
                 }
             } catch (const std::exception & e) {
                 active_target_sent_ = false;
-                RCLCPP_ERROR(get_logger(), "set_target service call failed: %s", e.what());
+                RCLCPP_ERROR(get_logger(), "Target service failed | error=%s", e.what());
             }
         });
 }
@@ -810,7 +823,7 @@ bool UavOffboardFsm::isWaypointReached(const Waypoint & waypoint,
 {
     if (state.position.size() < 4) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "Joint state has insufficient position entries: %zu",
+                             "Position feedback invalid | expected=4 actual=%zu",
                              state.position.size());
         return false;
     }
@@ -962,7 +975,7 @@ void UavOffboardFsm::handleControlCommand(const std_msgs::msg::String::SharedPtr
     const auto parsed = parseCommand(msg->data);
     if (!parsed) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "Unknown control command: %s", msg->data.c_str());
+                             "Command rejected | unknown=%s", msg->data.c_str());
         return;
     }
 
@@ -971,12 +984,13 @@ void UavOffboardFsm::handleControlCommand(const std_msgs::msg::String::SharedPtr
 
     if (parsed->type == CommandType::CONFIRM) {
         if (state != ControlState::MANUAL_OPERA) {
-            RCLCPP_WARN(get_logger(), "CONFIRM ignored outside MANUAL_OPERA");
+            RCLCPP_WARN(get_logger(), "Command rejected | CONFIRM requires state=MANUAL_OPERA current=%s",
+                        stateToString(state).c_str());
             return;
         }
         manual_command_.confirmations =
             std::min(manual_confirmations_required_, manual_command_.confirmations + 1);
-        RCLCPP_INFO(get_logger(), "Manual confirmation accepted (%d/%d)",
+        RCLCPP_INFO(get_logger(), "Command accepted | CONFIRM manual_progress=%d/%d",
                     manual_command_.confirmations, manual_confirmations_required_);
         return;
     }
@@ -991,24 +1005,25 @@ void UavOffboardFsm::handleControlCommand(const std_msgs::msg::String::SharedPtr
         manual_command_ = {};
         self_check_requested_ = true;
         transitionTo(ControlState::SELF_CHECK);
-        RCLCPP_INFO(get_logger(), "Keyboard SELF_CHECK command accepted");
+        RCLCPP_INFO(get_logger(), "Command accepted | SELF_CHECK");
         return;
     }
 
     if (parsed->type == CommandType::TAKEOFF) {
         if (state == ControlState::SELF_CHECK && ready_for_takeoff_) {
             transitionTo(ControlState::TAKEOFF);
-            RCLCPP_INFO(get_logger(), "Keyboard TAKEOFF command accepted");
+            RCLCPP_INFO(get_logger(), "Command accepted | TAKEOFF");
         } else {
             RCLCPP_WARN(get_logger(),
-                        "TAKEOFF ignored while state=%s ready_for_takeoff=%d",
-                        stateToString(state).c_str(), ready_for_takeoff_ ? 1 : 0);
+                        "Command rejected | TAKEOFF current=%s ready_for_takeoff=%s",
+                        stateToString(state).c_str(), ready_for_takeoff_ ? "true" : "false");
         }
         return;
     }
 
     if (state != ControlState::HOVERING) {
-        RCLCPP_WARN(get_logger(), "Command %s ignored while state=%s; commands are accepted from HOVERING",
+        RCLCPP_WARN(get_logger(),
+                    "Command rejected | command=%s current=%s required=HOVERING",
                     msg->data.c_str(), stateToString(state).c_str());
         return;
     }
@@ -1016,26 +1031,32 @@ void UavOffboardFsm::handleControlCommand(const std_msgs::msg::String::SharedPtr
     switch (parsed->type) {
         case CommandType::TRANSIT_TO_AREA:
             transitionTo(ControlState::TRANSIT_TO_AREA);
+            RCLCPP_INFO(get_logger(), "Command accepted | TRANSIT_TO_AREA");
             break;
         case CommandType::SEARCH_ADJUST:
             transitionTo(ControlState::SEARCH_ADJUST);
+            RCLCPP_INFO(get_logger(), "Command accepted | SEARCH_ADJUST");
             break;
         case CommandType::APPROACH_PLANT:
             transitionTo(ControlState::APPROACH_PLANT);
+            RCLCPP_INFO(get_logger(), "Command accepted | APPROACH_PLANT");
             break;
         case CommandType::RETREAT:
             transitionTo(ControlState::RETREAT);
+            RCLCPP_INFO(get_logger(), "Command accepted | RETREAT");
             break;
         case CommandType::BACK_HOME:
             transitionTo(ControlState::BACK_HOME);
+            RCLCPP_INFO(get_logger(), "Command accepted | BACK_HOME");
             break;
         case CommandType::MANUAL_OPERA:
             if (!parsed->manual) {
-                RCLCPP_WARN(get_logger(), "MANUAL_OPERA requires: MANUAL x y z yaw");
+                RCLCPP_WARN(get_logger(), "Command rejected | MANUAL requires: MANUAL x y z yaw");
                 return;
             }
             manual_command_ = *parsed->manual;
             transitionTo(ControlState::MANUAL_OPERA);
+            RCLCPP_INFO(get_logger(), "Command accepted | MANUAL_OPERA");
             break;
         case CommandType::CONFIRM:
         case CommandType::SELF_CHECK:
@@ -1054,10 +1075,11 @@ void UavOffboardFsm::handleMissionState(const std_msgs::msg::String::SharedPtr m
     } else if (tokenMatches(state, mission_disabled_aliases_)) {
         mission_enabled_ = false;
     } else {
-        RCLCPP_WARN(get_logger(), "Unknown mission state: %s", msg->data.c_str());
+        RCLCPP_WARN(get_logger(), "Mission state ignored | unknown=%s", msg->data.c_str());
         return;
     }
-    RCLCPP_INFO(get_logger(), "Mission enabled set to %s", mission_enabled_ ? "true" : "false");
+    RCLCPP_INFO(get_logger(), "Mission state updated | mission_enabled=%s",
+                mission_enabled_ ? "true" : "false");
 }
 
 // 轨迹参考状态回调：保存在线轨迹生成器输出的参考状态，作为真实位置反馈缺失时的备用状态。

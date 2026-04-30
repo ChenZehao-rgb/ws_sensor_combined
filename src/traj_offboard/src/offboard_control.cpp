@@ -74,6 +74,8 @@ class OffboardControlBridge : public rclcpp::Node {
 
         // Control timer: pair OffboardControlMode with a setpoint
         timer_ = this->create_wall_timer(50ms, std::bind(&OffboardControlBridge::controlLoopOnTimer, this));
+        RCLCPP_INFO(get_logger(),
+                    "Offboard bridge ready | fsm_state=/uav_offboard_fsm/offboard_state set_target=online_traj_generator/set_target traj_service=/online_traj_generator/get_trajectory_setpoints");
     }
 
   private:
@@ -168,7 +170,7 @@ void OffboardControlBridge::VehicleHomePositionCallback(const px4_msgs::msg::Hom
     uav_home_position_.y = msg->y;
     uav_home_position_.z = msg->z;
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                         "Received home position: [%.2f, %.2f, %.2f]",
+                         "PX4 home position | ned=(%.2f, %.2f, %.2f)",
                          uav_home_position_.x, uav_home_position_.y, uav_home_position_.z);
 }
 void OffboardControlBridge::OffboardStateCallback(const std_msgs::msg::String::SharedPtr msg) {
@@ -191,6 +193,10 @@ void OffboardControlBridge::handle_set_target(const traj_offboard::srv::SetTarge
     response->success = true;
     update_target_ = true;
     has_target_ = true;
+    RCLCPP_INFO(get_logger(),
+                "Target received | enu=(%.2f, %.2f, %.2f, yaw %.2f)",
+                target_pose_.position[0], target_pose_.position[1],
+                target_pose_.position[2], target_pose_.yaw);
 }
 
 void OffboardControlBridge::publish_vehicle_command(uint16_t command, float param1, float param2) {
@@ -277,11 +283,13 @@ bool OffboardControlBridge::isArrivedAtPosition(px4_msgs::msg::TrajectorySetpoin
 void OffboardControlBridge::publish_trajectory_setpoint() {
     px4_msgs::msg::TrajectorySetpoint current_state;
     while (!get_traj_setpoint_client_->service_is_ready()) {
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "traj generator service not available…");
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
+                             "Trajectory service unavailable | waiting for /online_traj_generator/get_trajectory_setpoints");
         return;
     }
     if(pending_request_) {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "Previous request still pending, skipping this cycle");
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "Trajectory request pending | skipping until previous response returns");
         return;
     }
     current_state.position[0] = uav_pose_.pose.position.x;
@@ -308,7 +316,7 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
             last_cmd_ = publishConvertedSetpoint(resp->trajectory_setpoint);
             last_cmd_time_ = this->now();
         } catch (const std::exception& e) {
-            RCLCPP_ERROR(this->get_logger(), "get_trajectory_setpoint failed: %s", e.what());
+            RCLCPP_ERROR(this->get_logger(), "Trajectory service call failed | error=%s", e.what());
             // hold last command
             last_cmd_ = publishConvertedSetpoint(last_cmd_);
             last_cmd_time_ = this->now();
@@ -320,11 +328,13 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
 void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySetpoint takeoff_setpoint) {
     px4_msgs::msg::TrajectorySetpoint current_state;
     while (!get_traj_setpoint_client_->service_is_ready()) {
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000, "traj generator service not available…");
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
+                             "Trajectory service unavailable | waiting for /online_traj_generator/get_trajectory_setpoints");
         return;
     }
     if(pending_request_) {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "Previous request still pending, skipping this cycle");
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "Trajectory request pending | skipping until previous response returns");
         return;
     }
     current_state.position[0] = uav_pose_.pose.position.x;
@@ -347,7 +357,7 @@ void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySe
             last_cmd_ = publishConvertedSetpoint(resp->trajectory_setpoint);
             last_cmd_time_ = this->now();
         } catch (const std::exception& e) {
-            RCLCPP_ERROR(this->get_logger(), "get_trajectory_setpoint failed: %s", e.what());
+            RCLCPP_ERROR(this->get_logger(), "Trajectory service call failed | error=%s", e.what());
             // hold last command
             last_cmd_ = publishConvertedSetpoint(last_cmd_);
             last_cmd_time_ = this->now();
@@ -361,9 +371,10 @@ void OffboardControlBridge::controlLoopOnTimer() {
         case FlightState::WAITINGFORCOMMAND: {
             if(offboard_state_.data == "TAKEOFF") {
                 flight_state_ = FlightState::TAKEOFF;
-                RCLCPP_INFO(get_logger(), "Received TAKEOFF command, initiating takeoff sequence...");
+                RCLCPP_INFO(get_logger(), "Bridge state -> TAKEOFF | arming and publishing takeoff setpoints");
             } else {
-                RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 3000, "Waiting for TAKEOFF command...");
+                RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
+                                     "Bridge waiting | expected FSM state TAKEOFF on /uav_offboard_fsm/offboard_state");
             }
             break;
         }
@@ -372,7 +383,7 @@ void OffboardControlBridge::controlLoopOnTimer() {
                 // Switch to offboard mode and arm after sending initial setpoints
                 publish_vehicle_command(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
                 publish_vehicle_command(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0f);
-                RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 2000, "Offboard & arm commands sent");
+                RCLCPP_INFO(get_logger(), "PX4 command sent | mode=OFFBOARD arm=true");
             }
             if (offboard_setpoint_counter_ < 11) {
                 ++offboard_setpoint_counter_;
@@ -383,17 +394,20 @@ void OffboardControlBridge::controlLoopOnTimer() {
             if (isArrivedAtPosition(HoverSetpoint, POSITION_TOLERANCE)) {
                 takeoff_complete_ = true;
                 flight_state_ = FlightState::TRAJECTORY_FOLLOWING;
-                RCLCPP_INFO(get_logger(), "Takeoff complete! Hovering at (%.2f, %.2f, %.2f)", uav_pose_.pose.position.x, uav_pose_.pose.position.y, uav_pose_.pose.position.z);
+                RCLCPP_INFO(get_logger(), "Bridge state -> TRAJECTORY_FOLLOWING | takeoff complete pos=(%.2f, %.2f, %.2f)", uav_pose_.pose.position.x, uav_pose_.pose.position.y, uav_pose_.pose.position.z);
             }
             else{
-                // 5 secondly log takeoff progress, 1s, 2s, 3s, 4s
-                RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 1000, "Taking off... "); 
+                RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 3000,
+                                     "Takeoff progress | pos=(%.2f, %.2f, %.2f) target=(0.00, 0.00, %.2f)",
+                                     uav_pose_.pose.position.x, uav_pose_.pose.position.y,
+                                     uav_pose_.pose.position.z, TAKEOFF_HEIGHT);
             }
             break;
         }
         case FlightState::TRAJECTORY_FOLLOWING: {
             if(!has_target_) {
-                RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 3000, "Waiting for first target...");
+                RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
+                                     "Trajectory following | waiting for first target from FSM");
                 auto HoverSetpoint = makePositionHoldSetpoint(0.0f, 0.0f, TAKEOFF_HEIGHT, 0.0f);
                 publish_takeoff_setpoint(HoverSetpoint);
                 break;

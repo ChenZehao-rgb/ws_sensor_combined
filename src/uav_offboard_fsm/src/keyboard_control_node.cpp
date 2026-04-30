@@ -10,7 +10,9 @@
 class KeyboardControlNode : public rclcpp::Node {
   public:
     KeyboardControlNode() : rclcpp::Node("uav_keyboard_control") {
-        command_pub_ = this->create_publisher<std_msgs::msg::String>("/uav_offboard_fsm/control_command", 10);
+        const auto control_command_topic =
+            declare_parameter<std::string>("control_command_topic", "/uav_offboard_fsm/control_command");
+        command_pub_ = this->create_publisher<std_msgs::msg::String>(control_command_topic, 10);
         startKeyboardListener();
     }
 
@@ -52,7 +54,10 @@ void KeyboardControlNode::startKeyboardListener() {
     stop_keyboard_.store(false);
     keyboard_thread_ = std::thread(&KeyboardControlNode::keyboardLoop, this);
     RCLCPP_INFO(this->get_logger(),
-                "Keyboard control enabled: Shift+S self-check, Shift+T takeoff, Shift+R transit, Shift+A search adjust, Shift+P approach, Shift+E retreat, Shift+B back home, Shift+M manual demo, Shift+Y confirm.");
+                "Keyboard control ready\n"
+                "  Shift+S: self-check  Shift+T: takeoff  Shift+R: transit\n"
+                "  Shift+A: search      Shift+P: approach Shift+E: retreat\n"
+                "  Shift+B: back home   Shift+M: manual   Shift+Y: confirm");
 }
 
 void KeyboardControlNode::stopKeyboardListener() {
@@ -112,7 +117,7 @@ void KeyboardControlNode::publishCommand(const std::string &state) {
     std_msgs::msg::String msg;
     msg.data = state;
     command_pub_->publish(msg);
-    RCLCPP_INFO(this->get_logger(), "Publishing control command: %s", state.c_str());
+    RCLCPP_INFO(this->get_logger(), "Command published | %s", state.c_str());
 }
 
 int main(int argc, char **argv) {

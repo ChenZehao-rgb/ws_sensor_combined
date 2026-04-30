@@ -30,6 +30,8 @@ public:
 		// Service to get current trajectory setpoints
 		get_traj_setpoints_srv_ = this->create_service<traj_offboard::srv::GetTrajectorySetpoint>(
 			"/online_traj_generator/get_trajectory_setpoints", std::bind(&OnlineTrajGenerator::handleGetTrajSetpoints, this, std::placeholders::_1, std::placeholders::_2));
+    RCLCPP_INFO(get_logger(),
+                "Online trajectory generator ready | service=/online_traj_generator/get_trajectory_setpoints debug_topics=/online_traj_generator/ruckig_*");
 	}
 
 private:
@@ -99,7 +101,7 @@ private:
     if (isFirstTraj_ || !hasLastCommand_) {
       current_state_ = request->current_state;
       isFirstTraj_ = false;
-      RCLCPP_INFO(get_logger(), "OnlineTrajGenerator: first trajectory request received");
+      RCLCPP_INFO(get_logger(), "Trajectory generator active | first request received");
     } else {
       current_state_ = last_command_state_;
     }

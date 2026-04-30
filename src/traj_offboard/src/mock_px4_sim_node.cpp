@@ -104,7 +104,7 @@ class MockPx4Sim : public rclcpp::Node {
 
     void handleVehicleCommand(const px4_msgs::msg::VehicleCommand::SharedPtr msg) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
-                             "Mock PX4 received vehicle command %u", msg->command);
+                             "Mock PX4 command received | command=%u", msg->command);
     }
 
     void onTimer() {
