@@ -3,6 +3,7 @@
 from datetime import datetime
 from pathlib import Path
 
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.conditions import IfCondition
@@ -26,6 +27,7 @@ def generate_launch_description() -> LaunchDescription:
     use_mock_px4 = LaunchConfiguration('use_mock_px4')
     use_keyboard = LaunchConfiguration('use_keyboard')
     record_bag = LaunchConfiguration('record_bag')
+    fsm_params = Path(get_package_share_directory('uav_offboard_fsm')) / 'config' / 'uav_offboard_fsm.yaml'
 
     topics_to_record = [
         '/online_traj_generator/ruckig_state',
@@ -63,6 +65,7 @@ def generate_launch_description() -> LaunchDescription:
         executable='uav_offboard_fsm_node',
         name='uav_offboard_fsm',
         output='screen',
+        parameters=[str(fsm_params)],
     )
 
     keyboard = Node(

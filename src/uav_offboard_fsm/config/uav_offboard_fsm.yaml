@@ -1,0 +1,140 @@
+uav_offboard_fsm:
+  ros__parameters:
+    # 起飞目标航点，格式为 [x, y, z, yaw]，单位分别是 m、m、m、rad。
+    takeoff_waypoint: [0.0, 0.0, 5.0, 0.0]
+
+    # 返航目标航点，格式为 [x, y, z, yaw]，单位分别是 m、m、m、rad。
+    home_waypoint: [0.0, 0.0, 5.0, 0.0]
+
+    # 位置到达容差，x/y/z 三个方向都进入该误差范围才认为到达航点，单位 m。
+    position_tolerance: 0.25
+
+    # 偏航角到达容差，单位 rad。
+    yaw_tolerance: 0.15
+
+    # 初始任务使能开关；false 时自检不会通过，除非 mission_state_topic 收到使能状态。
+    mission_enabled: true
+
+    # 自检是否强制要求测距传感器有新鲜数据。
+    require_distance_sensor: false
+
+    # 测距数据超时时间，单位 s。
+    distance_sensor_timeout_s: 1.0
+
+    # 位置/轨迹状态反馈超时时间，单位 s。
+    state_feedback_timeout_s: 1.0
+
+    # 搜索微调时的偏航角增量，单位 rad。
+    search_yaw_offset_rad: 0.35
+
+    # 搜索微调时左右横移距离，单位 m。
+    search_lateral_offset_m: 0.4
+
+    # 单次靠近植株允许的最大前进距离，单位 m。
+    approach_distance_m: 1.0
+
+    # 靠近植株的目标测距，单位 m。
+    approach_target_distance_m: 0.7
+
+    # 靠近植株的测距容差，单位 m。
+    approach_distance_tolerance_m: 0.1
+
+    # 后退阶段沿机体系后方退回的距离，单位 m。
+    retreat_distance_m: 1.0
+
+    # 下发给轨迹节点的目标速度 [vx, vy, vz]，单位 m/s。
+    target_velocity: [0.0, 0.0, 0.0]
+
+    # 下发给轨迹节点的目标加速度 [ax, ay, az]，单位 m/s^2。
+    target_acceleration: [0.0, 0.0, 0.0]
+
+    # 下发给轨迹节点的目标偏航角速度，单位 rad/s。
+    target_yawspeed: 0.0
+
+    # PX4 heading 转状态机 yaw 时使用的偏置，默认 pi/2，单位 rad。
+    heading_yaw_offset_rad: 1.5707963267948966
+
+    # 测距传感器最小信号质量；PX4 signal_quality 低于该值的数据会被丢弃。
+    distance_sensor_min_signal_quality: 1
+
+    # 状态机主循环周期，单位 ms。
+    control_loop_period_ms: 50
+
+    # MultiThreadedExecutor 线程数。
+    executor_threads: 2
+
+    # 普通发布器队列深度。
+    publisher_queue_depth: 10
+
+    # 普通订阅器队列深度。
+    subscriber_queue_depth: 10
+
+    # 轨迹状态订阅器队列深度。
+    state_feedback_queue_depth: 10
+
+    # PX4 传感器类订阅器队列深度。
+    sensor_queue_depth: 10
+
+    # 大多数状态日志的节流周期，单位 ms。
+    log_throttle_ms: 2000
+
+    # 起飞等待日志的节流周期，单位 ms。
+    takeoff_wait_log_throttle_ms: 1000
+
+    # 悬停状态日志的节流周期，单位 ms。
+    hovering_log_throttle_ms: 3000
+
+    # 手动操作需要收到的确认次数。
+    manual_confirmations_required: 2
+
+    # 发布给 offboard_control_bridge 的状态话题。
+    offboard_state_topic: "/uav_offboard_fsm/offboard_state"
+
+    # 状态机诊断信息话题。
+    status_topic: "/uav_offboard_fsm/status"
+
+    # traj_offboard 的目标设置服务名。
+    set_target_service: "online_traj_generator/set_target"
+
+    # 控制指令输入话题。
+    control_command_topic: "/uav_offboard_fsm/control_command"
+
+    # 任务使能状态输入话题。
+    mission_state_topic: "/uav_offboard_fsm/mission_state"
+
+    # 在线轨迹生成器状态反馈话题。
+    state_feedback_topic: "/online_traj_generator/ruckig_state"
+
+    # PX4 测距传感器话题。
+    distance_sensor_topic: "/fmu/out/distance_sensor"
+
+    # PX4 本地位置话题。
+    vehicle_local_position_topic: "/fmu/out/vehicle_local_position"
+
+    # PX4 home 位置话题。
+    home_position_topic: "/fmu/out/home_position"
+
+    # 前往任务区航点序列，格式是 [x, y, z, yaw, x, y, z, yaw, ...]。
+    transit_waypoints: [
+      0.0, 0.0, 5.0, 0.0,
+      5.0, 0.0, 5.0, 0.0,
+      5.0, 5.0, 5.0, 1.57079632679
+    ]
+
+    # 控制指令别名；修改这里即可更换上层发来的命令字符串。
+    command_aliases:
+      transit_to_area: ["TRANSIT_TO_AREA", "TRANSIT", "TRAJECTORY_TRACKING", "R"]
+      search_adjust: ["SEARCH_ADJUST", "SEARCH", "ADJUST", "A"]
+      approach_plant: ["APPROACH_PLANT", "APPROACH", "P"]
+      retreat: ["RETREAT", "E"]
+      back_home: ["BACK_HOME", "HOME", "B"]
+      confirm: ["CONFIRM", "YES", "Y"]
+      self_check: ["SELF_CHECK", "SELFCHECK", "RESET", "S"]
+      takeoff: ["TAKEOFF", "T"]
+      manual_opera: ["MANUAL_OPERA", "MANUAL", "M"]
+
+    # 外部任务状态中表示允许执行任务的字符串。
+    mission_state_enabled_aliases: ["ENABLED", "RUNNING", "AUTO"]
+
+    # 外部任务状态中表示禁止/中止任务的字符串。
+    mission_state_disabled_aliases: ["DISABLED", "ABORT", "STOP"]

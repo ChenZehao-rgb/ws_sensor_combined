@@ -63,4 +63,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/include")
   )
 endif()
 
+install(
+  DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
+)
+
 ament_package()
