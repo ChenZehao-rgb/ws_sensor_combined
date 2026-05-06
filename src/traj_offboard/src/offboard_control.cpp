@@ -369,13 +369,13 @@ void OffboardControlBridge::controlLoopOnTimer() {
     publish_offboard_control_mode();
     switch (flight_state_) {
         case FlightState::WAITINGFORCOMMAND: {
-            if(offboard_state_.data == "UAV_START" || offboard_state_.data == "TAKEOFF") {
+            if(offboard_state_.data == "UAV_START") {
                 flight_state_ = FlightState::TAKEOFF;
                 RCLCPP_INFO(get_logger(), "Bridge state -> TAKEOFF | trigger=%s arming and publishing takeoff setpoints",
                             offboard_state_.data.c_str());
             } else {
                 RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
-                                     "Bridge waiting | expected FSM state UAV_START or TAKEOFF on /uav_offboard_fsm/offboard_state");
+                                     "Bridge waiting | expected FSM state UAV_START on /uav_offboard_fsm/offboard_state");
             }
             break;
         }
