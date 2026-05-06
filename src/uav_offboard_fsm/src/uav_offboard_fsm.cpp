@@ -53,6 +53,10 @@ class UavOffboardFsm : public rclcpp::Node {
         approach_target_distance_m_ = declare_parameter<double>("approach_target_distance_m", 0.7);
         approach_distance_tolerance_m_ = declare_parameter<double>("approach_distance_tolerance_m", 0.1);
         retreat_distance_m_ = declare_parameter<double>("retreat_distance_m", 1.0);
+        sample_adjust_forward_m_ = declare_parameter<double>("sample_adjust_forward_m", 0.2);
+        sample_adjust_right_m_ = declare_parameter<double>("sample_adjust_right_m", 0.0);
+        sample_adjust_z_offset_m_ = declare_parameter<double>("sample_adjust_z_offset_m", 0.0);
+        sample_adjust_yaw_offset_rad_ = declare_parameter<double>("sample_adjust_yaw_offset_rad", 0.0);
         target_velocity_ =
             parseVector3Parameter(declare_parameter<std::vector<double>>("target_velocity", {0.0, 0.0, 0.0}),
                                   {0.0, 0.0, 0.0});
@@ -72,8 +76,6 @@ class UavOffboardFsm : public rclcpp::Node {
         takeoff_wait_log_throttle_ms_ = positiveInt(
             declare_parameter<int>("takeoff_wait_log_throttle_ms", 1000));
         hovering_log_throttle_ms_ = positiveInt(declare_parameter<int>("hovering_log_throttle_ms", 3000));
-        manual_confirmations_required_ = positiveInt(
-            declare_parameter<int>("manual_confirmations_required", 2));
 
         const auto offboard_state_topic =
             declare_parameter<std::string>("offboard_state_topic", "/uav_offboard_fsm/offboard_state");
@@ -110,24 +112,32 @@ class UavOffboardFsm : public rclcpp::Node {
             };
         }
 
-        transit_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
-            "command_aliases.transit_to_area", {"TRANSIT_TO_AREA", "TRANSIT", "TRAJECTORY_TRACKING", "R"}));
-        search_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
-            "command_aliases.search_adjust", {"SEARCH_ADJUST", "SEARCH", "ADJUST", "A"}));
-        approach_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
-            "command_aliases.approach_plant", {"APPROACH_PLANT", "APPROACH", "P"}));
-        retreat_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
-            "command_aliases.retreat", {"RETREAT", "E"}));
+        self_check_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
+            "command_aliases.self_check", {"SELF_CHECK", "SELFCHECK", "RESET", "S"}));
+        uav_start_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
+            "command_aliases.uav_start", {"UAV_START", "TAKEOFF", "WAIT_TASK_ENABLE_AUTH", "T"}));
+        nav_to_task_dom_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
+            "command_aliases.nav_to_task_dom", {"NAV_TO_TASK_DOM", "TRANSIT_TO_AREA", "TRANSIT", "TRAJECTORY_TRACKING", "R"}));
+        search_auto_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
+            "command_aliases.search_adjust_auto", {"SEARCH_ADJUST_AUTO", "SEARCH_ADJUST", "SEARCH_AUTO", "SEARCH", "ADJUST", "A"}));
+        search_manual_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
+            "command_aliases.search_adjust_manual", {"SEARCH_ADJUST_MANUAL", "SEARCH_MANUAL", "MANUAL_SEARCH", "Z"}));
+        targ_got_confirm_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
+            "command_aliases.targ_got_confirm", {"TARG_GOT_CONFIRM", "TARG_GOT", "APPROACH_PLANT", "APPROACH", "P"}));
+        samp_auto_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
+            "command_aliases.samp_adjust_auto", {"SAMP_ADJUST_AUTO", "SAMPLE_ADJUST_AUTO", "SAMP_AUTO", "C"}));
+        samp_manual_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
+            "command_aliases.samp_adjust_manual", {"SAMP_ADJUST_MANUAL", "SAMPLE_ADJUST_MANUAL", "SAMP_MANUAL", "V"}));
+        arm_config_prep_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
+            "command_aliases.arm_config_prep", {"ARM_CONFIG_PREP", "SAMPL_OPERA", "SAMPLE_OK", "O"}));
+        uav_pre_back_home_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
+            "command_aliases.uav_pre_back_home", {"UAV_PRE_BACK_HOME", "RETREAT", "E"}));
+        task_term_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
+            "command_aliases.task_term", {"UAV_TASK_TERM", "TASK_TERM", "FAIL", "X"}));
         back_home_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
             "command_aliases.back_home", {"BACK_HOME", "HOME", "B"}));
         confirm_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
             "command_aliases.confirm", {"CONFIRM", "YES", "Y"}));
-        self_check_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
-            "command_aliases.self_check", {"SELF_CHECK", "SELFCHECK", "RESET", "S"}));
-        takeoff_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
-            "command_aliases.takeoff", {"TAKEOFF", "T"}));
-        manual_command_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
-            "command_aliases.manual_opera", {"MANUAL_OPERA", "MANUAL", "M"}));
         mission_enabled_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
             "mission_state_enabled_aliases", {"ENABLED", "RUNNING", "AUTO"}));
         mission_disabled_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
@@ -192,42 +202,39 @@ class UavOffboardFsm : public rclcpp::Node {
         double yaw;
     };
 
-    struct ManualCommand {
-        double dx{0.0};
-        double dy{0.0};
-        double dz{0.0};
-        double dyaw{0.0};
-        int confirmations{0};
-        bool target_prepared{false};
-    };
-
     enum class ControlState {
         SELF_CHECK,
-        TAKEOFF,
-        HOVERING,
+        UAV_START,
         TRANSIT_TO_AREA,
-        SEARCH_ADJUST,
+        HOVERING,
+        SEARCH_ADJUST_AUTO,
+        SEARCH_ADJUST_MANUAL,
         APPROACH_PLANT,
+        SAMP_ADJUST_AUTO,
+        SAMP_ADJUST_MANUAL,
         RETREAT,
         BACK_HOME,
-        MANUAL_OPERA
+        UAV_TASK_TERM
     };
 
     enum class CommandType {
-        TRANSIT_TO_AREA,
-        SEARCH_ADJUST,
-        APPROACH_PLANT,
-        RETREAT,
-        BACK_HOME,
-        MANUAL_OPERA,
-        CONFIRM,
         SELF_CHECK,
-        TAKEOFF
+        UAV_START,
+        NAV_TO_TASK_DOM,
+        SEARCH_ADJUST_AUTO,
+        SEARCH_ADJUST_MANUAL,
+        TARG_GOT_CONFIRM,
+        SAMP_ADJUST_AUTO,
+        SAMP_ADJUST_MANUAL,
+        ARM_CONFIG_PREP,
+        UAV_PRE_BACK_HOME,
+        BACK_HOME,
+        TASK_TERM,
+        CONFIRM
     };
 
     struct ParsedCommand {
         CommandType type;
-        std::optional<ManualCommand> manual;
     };
 
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr offboard_state_pub_;
@@ -261,7 +268,11 @@ class UavOffboardFsm : public rclcpp::Node {
     bool ready_for_transit_{false};
     bool is_arrived_task_aera_{false};
     bool adjust_completed_{false};
+    bool uav_search_succeed_{false};
     bool approach_completed_{false};
+    bool uav_adjust_succeed_{false};
+    bool arm_config_prepared_{false};
+    bool uav_ready_for_back_{false};
     bool back_home_{false};
     bool mission_enabled_{true};
     bool require_distance_sensor_{false};
@@ -276,6 +287,10 @@ class UavOffboardFsm : public rclcpp::Node {
     double approach_target_distance_m_{0.7};
     double approach_distance_tolerance_m_{0.1};
     double retreat_distance_m_{1.0};
+    double sample_adjust_forward_m_{0.2};
+    double sample_adjust_right_m_{0.0};
+    double sample_adjust_z_offset_m_{0.0};
+    double sample_adjust_yaw_offset_rad_{0.0};
     std::array<double, 3> target_velocity_{0.0, 0.0, 0.0};
     std::array<double, 3> target_acceleration_{0.0, 0.0, 0.0};
     double target_yawspeed_{0.0};
@@ -290,17 +305,20 @@ class UavOffboardFsm : public rclcpp::Node {
     int log_throttle_ms_{2000};
     int takeoff_wait_log_throttle_ms_{1000};
     int hovering_log_throttle_ms_{3000};
-    int manual_confirmations_required_{2};
 
-    std::vector<std::string> transit_command_aliases_;
-    std::vector<std::string> search_command_aliases_;
-    std::vector<std::string> approach_command_aliases_;
-    std::vector<std::string> retreat_command_aliases_;
+    std::vector<std::string> self_check_command_aliases_;
+    std::vector<std::string> uav_start_command_aliases_;
+    std::vector<std::string> nav_to_task_dom_command_aliases_;
+    std::vector<std::string> search_auto_command_aliases_;
+    std::vector<std::string> search_manual_command_aliases_;
+    std::vector<std::string> targ_got_confirm_command_aliases_;
+    std::vector<std::string> samp_auto_command_aliases_;
+    std::vector<std::string> samp_manual_command_aliases_;
+    std::vector<std::string> arm_config_prep_command_aliases_;
+    std::vector<std::string> uav_pre_back_home_command_aliases_;
+    std::vector<std::string> task_term_command_aliases_;
     std::vector<std::string> back_home_command_aliases_;
     std::vector<std::string> confirm_command_aliases_;
-    std::vector<std::string> self_check_command_aliases_;
-    std::vector<std::string> takeoff_command_aliases_;
-    std::vector<std::string> manual_command_aliases_;
     std::vector<std::string> mission_enabled_aliases_;
     std::vector<std::string> mission_disabled_aliases_;
 
@@ -309,11 +327,13 @@ class UavOffboardFsm : public rclcpp::Node {
     std::vector<Waypoint> transit_waypoints_;
     std::vector<Waypoint> search_waypoints_;
     std::vector<Waypoint> approach_waypoints_;
+    std::vector<Waypoint> sample_adjust_waypoints_;
     std::vector<Waypoint> retreat_waypoints_;
     std::vector<Waypoint> back_home_waypoints_;
     std::size_t transit_index_{0};
     std::size_t search_index_{0};
     std::size_t approach_index_{0};
+    std::size_t sample_adjust_index_{0};
     std::size_t retreat_index_{0};
     std::size_t back_home_index_{0};
 
@@ -322,21 +342,23 @@ class UavOffboardFsm : public rclcpp::Node {
     bool target_request_pending_{false};
     rclcpp::Time last_target_sent_time_{0, 0, RCL_ROS_TIME};
 
-    ManualCommand manual_command_{};
-
     void controlLoopOnTimer();
     void onStateEntry(ControlState state);
     void transitionTo(ControlState state);
+    void resetMissionProgress();
 
     void handleSelfCheck();
-    void handleTakeoff();
+    void handleUavStart();
     void handleHovering();
     void handleTransitToArea();
-    void handleSearchAdjust();
+    void handleSearchAdjustAuto();
+    void handleSearchAdjustManual();
     void handleApproachPlant();
+    void handleSampleAdjustAuto();
+    void handleSampleAdjustManual();
     void handleRetreat();
     void handleBackHome();
-    void handleManualOperation();
+    void handleTaskTerm();
 
     bool handleWaypointSequence(std::vector<Waypoint> & waypoints, std::size_t & index,
                                 const std::string & label);
@@ -355,6 +377,7 @@ class UavOffboardFsm : public rclcpp::Node {
 
     void generateSearchAdjustWaypoints();
     void generateApproachWaypoints();
+    void generateSampleAdjustWaypoints();
     void generateRetreatWaypoints();
     Waypoint offsetBodyFrame(const Waypoint & base, double forward_m, double right_m) const;
 
@@ -373,6 +396,7 @@ class UavOffboardFsm : public rclcpp::Node {
     static std::array<double, 3> parseVector3Parameter(const std::vector<double> & flat,
                                                        const std::array<double, 3> & fallback);
     static std::string stateToString(ControlState state);
+    static int stateToId(ControlState state);
     std::optional<ParsedCommand> parseCommand(const std::string & command) const;
     static bool tokenMatches(const std::string & token, const std::vector<std::string> & aliases);
     static std::vector<std::string> upperCopyList(std::vector<std::string> values);
@@ -397,20 +421,29 @@ void UavOffboardFsm::controlLoopOnTimer()
         case ControlState::SELF_CHECK:
             handleSelfCheck();
             break;
-        case ControlState::TAKEOFF:
-            handleTakeoff();
-            break;
-        case ControlState::HOVERING:
-            handleHovering();
+        case ControlState::UAV_START:
+            handleUavStart();
             break;
         case ControlState::TRANSIT_TO_AREA:
             handleTransitToArea();
             break;
-        case ControlState::SEARCH_ADJUST:
-            handleSearchAdjust();
+        case ControlState::HOVERING:
+            handleHovering();
+            break;
+        case ControlState::SEARCH_ADJUST_AUTO:
+            handleSearchAdjustAuto();
+            break;
+        case ControlState::SEARCH_ADJUST_MANUAL:
+            handleSearchAdjustManual();
             break;
         case ControlState::APPROACH_PLANT:
             handleApproachPlant();
+            break;
+        case ControlState::SAMP_ADJUST_AUTO:
+            handleSampleAdjustAuto();
+            break;
+        case ControlState::SAMP_ADJUST_MANUAL:
+            handleSampleAdjustManual();
             break;
         case ControlState::RETREAT:
             handleRetreat();
@@ -418,8 +451,8 @@ void UavOffboardFsm::controlLoopOnTimer()
         case ControlState::BACK_HOME:
             handleBackHome();
             break;
-        case ControlState::MANUAL_OPERA:
-            handleManualOperation();
+        case ControlState::UAV_TASK_TERM:
+            handleTaskTerm();
             break;
     }
 
@@ -434,30 +467,42 @@ void UavOffboardFsm::onStateEntry(ControlState state)
 
     switch (state) {
         case ControlState::SELF_CHECK:
-            ready_for_takeoff_ = false;
-            ready_for_transit_ = false;
-            is_arrived_task_aera_ = false;
-            adjust_completed_ = false;
-            approach_completed_ = false;
-            back_home_ = false;
-            manual_command_ = {};
+            resetMissionProgress();
             break;
         case ControlState::TRANSIT_TO_AREA:
             transit_index_ = 0;
             is_arrived_task_aera_ = false;
             break;
-        case ControlState::SEARCH_ADJUST:
+        case ControlState::SEARCH_ADJUST_AUTO:
             search_index_ = 0;
             adjust_completed_ = false;
+            uav_search_succeed_ = false;
             generateSearchAdjustWaypoints();
+            break;
+        case ControlState::SEARCH_ADJUST_MANUAL:
+            adjust_completed_ = false;
+            uav_search_succeed_ = false;
             break;
         case ControlState::APPROACH_PLANT:
             approach_index_ = 0;
             approach_completed_ = false;
+            uav_adjust_succeed_ = false;
+            arm_config_prepared_ = false;
             generateApproachWaypoints();
+            break;
+        case ControlState::SAMP_ADJUST_AUTO:
+            sample_adjust_index_ = 0;
+            uav_adjust_succeed_ = false;
+            arm_config_prepared_ = false;
+            generateSampleAdjustWaypoints();
+            break;
+        case ControlState::SAMP_ADJUST_MANUAL:
+            uav_adjust_succeed_ = false;
+            arm_config_prepared_ = false;
             break;
         case ControlState::RETREAT:
             retreat_index_ = 0;
+            uav_ready_for_back_ = false;
             generateRetreatWaypoints();
             break;
         case ControlState::BACK_HOME:
@@ -465,12 +510,9 @@ void UavOffboardFsm::onStateEntry(ControlState state)
             back_home_ = false;
             back_home_waypoints_ = {home_waypoint_};
             break;
-        case ControlState::MANUAL_OPERA:
-            manual_command_.confirmations = 0;
-            manual_command_.target_prepared = false;
-            break;
-        case ControlState::TAKEOFF:
+        case ControlState::UAV_START:
         case ControlState::HOVERING:
+        case ControlState::UAV_TASK_TERM:
             break;
     }
 }
@@ -484,6 +526,21 @@ void UavOffboardFsm::transitionTo(ControlState state)
     control_state_.store(state);
 }
 
+// 任务进度复位：从自检重新开始时清空所有流程图标志，避免上一次任务状态影响新任务。
+void UavOffboardFsm::resetMissionProgress()
+{
+    ready_for_takeoff_ = false;
+    ready_for_transit_ = false;
+    is_arrived_task_aera_ = false;
+    adjust_completed_ = false;
+    uav_search_succeed_ = false;
+    approach_completed_ = false;
+    uav_adjust_succeed_ = false;
+    arm_config_prepared_ = false;
+    uav_ready_for_back_ = false;
+    back_home_ = false;
+}
+
 // 自检状态处理：等待键盘 SELF_CHECK 指令，检查任务使能和可选测距传感器状态，通过后允许起飞。
 void UavOffboardFsm::handleSelfCheck()
 {
@@ -495,7 +552,7 @@ void UavOffboardFsm::handleSelfCheck()
 
     if (ready_for_takeoff_) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "SELF_CHECK | passed; waiting for command TAKEOFF");
+                             "SELF_CHECK | passed; waiting for command UAV_START");
         return;
     }
 
@@ -509,29 +566,29 @@ void UavOffboardFsm::handleSelfCheck()
 
     ready_for_takeoff_ = true;
     self_check_requested_ = false;
-    RCLCPP_INFO(get_logger(), "SELF_CHECK complete | next=TAKEOFF");
+    RCLCPP_INFO(get_logger(), "SELF_CHECK complete | waiting for command UAV_START");
 }
 
-// 起飞状态处理：确认已经自检通过，并等待无人机到达起飞航点，到达后进入悬停状态。
-void UavOffboardFsm::handleTakeoff()
+// 起飞状态处理：确认已经自检通过，并等待无人机到达起飞航点，到达后进入任务调度悬停状态。
+void UavOffboardFsm::handleUavStart()
 {
     if (!ready_for_takeoff_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "TAKEOFF blocked | self-check is not complete");
+                             "UAV_START blocked | self-check is not complete");
         transitionTo(ControlState::SELF_CHECK);
         return;
     }
 
     if (!isUAVTakeoff()) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), takeoff_wait_log_throttle_ms_,
-                             "TAKEOFF | waiting for vehicle at target=(%.2f, %.2f, %.2f, yaw %.2f)",
+                             "UAV_START | waiting for vehicle at target=(%.2f, %.2f, %.2f, yaw %.2f)",
                              takeoff_waypoint_.x, takeoff_waypoint_.y,
                              takeoff_waypoint_.z, takeoff_waypoint_.yaw);
         return;
     }
 
     ready_for_transit_ = true;
-    RCLCPP_INFO(get_logger(), "TAKEOFF complete | next=HOVERING");
+    RCLCPP_INFO(get_logger(), "UAV_START complete | waiting for command NAV_TO_TASK_DOM");
     transitionTo(ControlState::HOVERING);
 }
 
@@ -539,7 +596,7 @@ void UavOffboardFsm::handleTakeoff()
 void UavOffboardFsm::handleHovering()
 {
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
-                         "HOVERING | ready for TRANSIT, SEARCH, APPROACH, RETREAT, BACK_HOME, or MANUAL");
+                         "HOVERING | waiting for next v4 command");
 }
 
 // 前往任务区域处理：按 transit_waypoints 参数中的航点顺序飞行，全部到达后标记已到达任务区。
@@ -547,41 +604,55 @@ void UavOffboardFsm::handleTransitToArea()
 {
     if (!ready_for_transit_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "TRANSIT_TO_AREA blocked | takeoff is not complete");
+                             "TRANSIT_TO_AREA blocked | UAV_START is not complete");
         transitionTo(ControlState::HOVERING);
         return;
     }
 
     if (handleWaypointSequence(transit_waypoints_, transit_index_, "transit")) {
         is_arrived_task_aera_ = true;
-        RCLCPP_INFO(get_logger(), "TRANSIT_TO_AREA complete | arrived_task_area=true");
+        RCLCPP_INFO(get_logger(), "TRANSIT_TO_AREA complete | uavArrivedTaskAera=1");
         transitionTo(ControlState::HOVERING);
     }
 }
 
-// 搜索微调处理：在已到达任务区的前提下执行自动生成的偏航和横移搜索航点。
-void UavOffboardFsm::handleSearchAdjust()
+// 自动搜索处理：到达任务区后执行偏航和横移搜索航点，完成后等待目标确认命令。
+void UavOffboardFsm::handleSearchAdjustAuto()
 {
     if (!is_arrived_task_aera_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "SEARCH_ADJUST blocked | task area has not been reached");
+                             "SEARCH_ADJUST_AUTO blocked | task area has not been reached");
         transitionTo(ControlState::HOVERING);
         return;
     }
 
-    if (handleWaypointSequence(search_waypoints_, search_index_, "search adjust")) {
+    if (handleWaypointSequence(search_waypoints_, search_index_, "search adjust auto")) {
         adjust_completed_ = true;
-        RCLCPP_INFO(get_logger(), "SEARCH_ADJUST complete | adjust_completed=true");
+        RCLCPP_INFO(get_logger(), "SEARCH_ADJUST_AUTO complete | waiting TARG_GOT_CONFIRM");
         transitionTo(ControlState::HOVERING);
     }
+}
+
+// 手动搜索处理：保持悬停并等待人工确认目标已锁定，或等待任务终止命令。
+void UavOffboardFsm::handleSearchAdjustManual()
+{
+    if (!is_arrived_task_aera_) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
+                             "SEARCH_ADJUST_MANUAL blocked | task area has not been reached");
+        transitionTo(ControlState::HOVERING);
+        return;
+    }
+
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
+                         "SEARCH_ADJUST_MANUAL | waiting for TARG_GOT_CONFIRM or TASK_TERM");
 }
 
 // 靠近植株处理：优先用测距传感器判断是否达到目标距离，否则按生成的前进航点执行接近动作。
 void UavOffboardFsm::handleApproachPlant()
 {
-    if (!adjust_completed_) {
+    if (!uav_search_succeed_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "APPROACH_PLANT blocked | search adjust is not complete");
+                             "APPROACH_PLANT blocked | target has not been confirmed");
         transitionTo(ControlState::HOVERING);
         return;
     }
@@ -602,20 +673,50 @@ void UavOffboardFsm::handleApproachPlant()
     }
 }
 
-// 后退处理：接近动作完成后沿机体系后方退回指定距离，完成后允许继续调整或执行其他任务。
-void UavOffboardFsm::handleRetreat()
+// 自动采样微调处理：接近目标后执行参数化机体系微调，完成后等待机械臂配置/采样作业确认。
+void UavOffboardFsm::handleSampleAdjustAuto()
 {
     if (!approach_completed_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "RETREAT blocked | approach is not complete");
+                             "SAMP_ADJUST_AUTO blocked | approach is not complete");
+        transitionTo(ControlState::HOVERING);
+        return;
+    }
+
+    if (handleWaypointSequence(sample_adjust_waypoints_, sample_adjust_index_, "sample adjust auto")) {
+        uav_adjust_succeed_ = true;
+        RCLCPP_INFO(get_logger(), "SAMP_ADJUST_AUTO complete | uavAdjustSucceed=1 waiting ARM_CONFIG_PREP or UAV_PRE_BACK_HOME");
+        transitionTo(ControlState::HOVERING);
+    }
+}
+
+// 手动采样微调处理：保持悬停，等待人工给出采样微调成功或任务终止命令。
+void UavOffboardFsm::handleSampleAdjustManual()
+{
+    if (!approach_completed_) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
+                             "SAMP_ADJUST_MANUAL blocked | approach is not complete");
+        transitionTo(ControlState::HOVERING);
+        return;
+    }
+
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
+                         "SAMP_ADJUST_MANUAL | waiting for ARM_CONFIG_PREP or TASK_TERM");
+}
+
+// 后退处理：返航前沿机体系后方退回安全距离，完成后允许执行 BACK_HOME。
+void UavOffboardFsm::handleRetreat()
+{
+    if (!ready_for_transit_) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
+                             "RETREAT blocked | UAV_START is not complete");
         transitionTo(ControlState::HOVERING);
         return;
     }
 
     if (handleWaypointSequence(retreat_waypoints_, retreat_index_, "retreat")) {
-        adjust_completed_ = true;
-        approach_completed_ = false;
-        RCLCPP_INFO(get_logger(), "RETREAT complete | adjust_completed=true approach_completed=false");
+        uav_ready_for_back_ = true;
+        RCLCPP_INFO(get_logger(), "RETREAT complete | uavReadyForBack=1");
         transitionTo(ControlState::HOVERING);
     }
 }
@@ -625,7 +726,7 @@ void UavOffboardFsm::handleBackHome()
 {
     if (!ready_for_transit_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "BACK_HOME blocked | takeoff is not complete");
+                             "BACK_HOME blocked | UAV_START is not complete");
         transitionTo(ControlState::HOVERING);
         return;
     }
@@ -637,36 +738,11 @@ void UavOffboardFsm::handleBackHome()
     }
 }
 
-// 手动操作处理：收到 MANUAL 指令后需要达到参数要求的确认次数，随后按当前位置叠加手动偏移量下发目标。
-void UavOffboardFsm::handleManualOperation()
+// 任务终止处理：保持悬停，等待人工选择预返航后退或直接返航。
+void UavOffboardFsm::handleTaskTerm()
 {
-    if (manual_command_.confirmations < manual_confirmations_required_) {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "MANUAL_OPERA | waiting for CONFIRM (%d/%d)",
-                             manual_command_.confirmations, manual_confirmations_required_);
-        return;
-    }
-
-    if (!manual_command_.target_prepared) {
-        const auto base = currentOrHoverWaypoint();
-        const Waypoint target{
-            base.x + manual_command_.dx,
-            base.y + manual_command_.dy,
-            base.z + manual_command_.dz,
-            wrapAngle(base.yaw + manual_command_.dyaw)};
-        setActiveTarget(target);
-        manual_command_.target_prepared = true;
-        RCLCPP_INFO(get_logger(),
-                    "MANUAL_OPERA target accepted | delta=(%.2f, %.2f, %.2f, dyaw %.2f)",
-                    manual_command_.dx, manual_command_.dy, manual_command_.dz,
-                    manual_command_.dyaw);
-    }
-
-    if (handleActiveTargetReached()) {
-        manual_command_ = {};
-        RCLCPP_INFO(get_logger(), "MANUAL_OPERA complete | next=HOVERING");
-        transitionTo(ControlState::HOVERING);
-    }
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
+                         "UAV_TASK_TERM | hovering; waiting for UAV_PRE_BACK_HOME or BACK_HOME");
 }
 
 // 航点序列处理：负责发送当前航点、等待到达、推进索引，并在序列全部完成时返回 true。
@@ -920,6 +996,18 @@ void UavOffboardFsm::generateApproachWaypoints()
     approach_waypoints_.push_back(offsetBodyFrame(base, travel_distance, 0.0));
 }
 
+// 生成采样微调航点：以当前位置为基准，按参数配置的机体系前后/左右/高度/偏航偏移生成单个微调目标。
+void UavOffboardFsm::generateSampleAdjustWaypoints()
+{
+    const auto base = currentOrHoverWaypoint();
+    auto target = offsetBodyFrame(base, sample_adjust_forward_m_, sample_adjust_right_m_);
+    target.z += sample_adjust_z_offset_m_;
+    target.yaw = wrapAngle(base.yaw + sample_adjust_yaw_offset_rad_);
+
+    sample_adjust_waypoints_.clear();
+    sample_adjust_waypoints_.push_back(target);
+}
+
 // 生成后退航点：从当前位置沿机体系后方移动 retreat_distance_m，用于离开植株或障碍物。
 void UavOffboardFsm::generateRetreatWaypoints()
 {
@@ -958,13 +1046,22 @@ void UavOffboardFsm::publishStatus(ControlState state)
     std_msgs::msg::String msg;
     std::ostringstream out;
     out << "state=" << stateToString(state)
+        << " state_id=" << stateToId(state)
+        << " uavCheckSucceed=" << (ready_for_takeoff_ ? 1 : 0)
+        << " uavTakeoffSucceed=" << (ready_for_transit_ ? 1 : 0)
+        << " uavArrivedTaskAera=" << (is_arrived_task_aera_ ? 1 : 0)
+        << " uavSearchSucceed=" << (uav_search_succeed_ ? 1 : 0)
+        << " uavApproachSucceed=" << (approach_completed_ ? 1 : 0)
+        << " uavAdjustSucceed=" << (uav_adjust_succeed_ ? 1 : 0)
+        << " uavReadyForBack=" << (uav_ready_for_back_ ? 1 : 0)
+        << " arm_config_prepared=" << (arm_config_prepared_ ? 1 : 0)
+        << " back_home=" << (back_home_ ? 1 : 0)
         << " self_check_requested=" << (self_check_requested_ ? 1 : 0)
         << " ready_for_takeoff=" << (ready_for_takeoff_ ? 1 : 0)
         << " ready_for_transit=" << (ready_for_transit_ ? 1 : 0)
         << " is_arrived_task_aera=" << (is_arrived_task_aera_ ? 1 : 0)
         << " adjust_completed=" << (adjust_completed_ ? 1 : 0)
-        << " approach_completed=" << (approach_completed_ ? 1 : 0)
-        << " back_home=" << (back_home_ ? 1 : 0);
+        << " approach_completed=" << (approach_completed_ ? 1 : 0);
     msg.data = out.str();
     status_pub_->publish(msg);
 }
@@ -981,86 +1078,180 @@ void UavOffboardFsm::handleControlCommand(const std_msgs::msg::String::SharedPtr
 
     std::lock_guard<std::mutex> lock(fsm_mutex_);
     const auto state = control_state_.load();
+    auto command_type = parsed->type;
 
-    if (parsed->type == CommandType::CONFIRM) {
-        if (state != ControlState::MANUAL_OPERA) {
-            RCLCPP_WARN(get_logger(), "Command rejected | CONFIRM requires state=MANUAL_OPERA current=%s",
+    if (command_type == CommandType::CONFIRM) {
+        if (state == ControlState::SEARCH_ADJUST_AUTO ||
+            state == ControlState::SEARCH_ADJUST_MANUAL ||
+            (state == ControlState::HOVERING && is_arrived_task_aera_ && !approach_completed_)) {
+            command_type = CommandType::TARG_GOT_CONFIRM;
+        } else if (state == ControlState::SAMP_ADJUST_MANUAL ||
+                   (state == ControlState::HOVERING && uav_adjust_succeed_ && !arm_config_prepared_)) {
+            command_type = CommandType::ARM_CONFIG_PREP;
+        } else {
+            RCLCPP_WARN(get_logger(), "Command rejected | CONFIRM has no action in state=%s",
                         stateToString(state).c_str());
             return;
         }
-        manual_command_.confirmations =
-            std::min(manual_confirmations_required_, manual_command_.confirmations + 1);
-        RCLCPP_INFO(get_logger(), "Command accepted | CONFIRM manual_progress=%d/%d",
-                    manual_command_.confirmations, manual_confirmations_required_);
-        return;
     }
 
-    if (parsed->type == CommandType::SELF_CHECK) {
-        ready_for_takeoff_ = false;
-        ready_for_transit_ = false;
-        is_arrived_task_aera_ = false;
-        adjust_completed_ = false;
-        approach_completed_ = false;
-        back_home_ = false;
-        manual_command_ = {};
+    if (command_type == CommandType::SELF_CHECK) {
+        resetMissionProgress();
         self_check_requested_ = true;
         transitionTo(ControlState::SELF_CHECK);
         RCLCPP_INFO(get_logger(), "Command accepted | SELF_CHECK");
         return;
     }
 
-    if (parsed->type == CommandType::TAKEOFF) {
+    if (command_type == CommandType::UAV_START) {
         if (state == ControlState::SELF_CHECK && ready_for_takeoff_) {
-            transitionTo(ControlState::TAKEOFF);
-            RCLCPP_INFO(get_logger(), "Command accepted | TAKEOFF");
+            transitionTo(ControlState::UAV_START);
+            RCLCPP_INFO(get_logger(), "Command accepted | UAV_START");
         } else {
             RCLCPP_WARN(get_logger(),
-                        "Command rejected | TAKEOFF current=%s ready_for_takeoff=%s",
+                        "Command rejected | UAV_START current=%s ready_for_takeoff=%s",
                         stateToString(state).c_str(), ready_for_takeoff_ ? "true" : "false");
         }
         return;
     }
 
-    if (state != ControlState::HOVERING) {
-        RCLCPP_WARN(get_logger(),
-                    "Command rejected | command=%s current=%s required=HOVERING",
-                    msg->data.c_str(), stateToString(state).c_str());
-        return;
-    }
-
-    switch (parsed->type) {
-        case CommandType::TRANSIT_TO_AREA:
+    switch (command_type) {
+        case CommandType::NAV_TO_TASK_DOM:
+            if (state != ControlState::HOVERING || !ready_for_transit_) {
+                RCLCPP_WARN(get_logger(),
+                            "Command rejected | NAV_TO_TASK_DOM current=%s uavTakeoffSucceed=%s",
+                            stateToString(state).c_str(), ready_for_transit_ ? "true" : "false");
+                return;
+            }
             transitionTo(ControlState::TRANSIT_TO_AREA);
-            RCLCPP_INFO(get_logger(), "Command accepted | TRANSIT_TO_AREA");
+            RCLCPP_INFO(get_logger(), "Command accepted | NAV_TO_TASK_DOM");
             break;
-        case CommandType::SEARCH_ADJUST:
-            transitionTo(ControlState::SEARCH_ADJUST);
-            RCLCPP_INFO(get_logger(), "Command accepted | SEARCH_ADJUST");
+        case CommandType::SEARCH_ADJUST_AUTO:
+            if (state != ControlState::HOVERING || !is_arrived_task_aera_) {
+                RCLCPP_WARN(get_logger(),
+                            "Command rejected | SEARCH_ADJUST_AUTO current=%s uavArrivedTaskAera=%s",
+                            stateToString(state).c_str(), is_arrived_task_aera_ ? "true" : "false");
+                return;
+            }
+            transitionTo(ControlState::SEARCH_ADJUST_AUTO);
+            RCLCPP_INFO(get_logger(), "Command accepted | SEARCH_ADJUST_AUTO");
             break;
-        case CommandType::APPROACH_PLANT:
+        case CommandType::SEARCH_ADJUST_MANUAL:
+            if (state != ControlState::HOVERING || !is_arrived_task_aera_) {
+                RCLCPP_WARN(get_logger(),
+                            "Command rejected | SEARCH_ADJUST_MANUAL current=%s uavArrivedTaskAera=%s",
+                            stateToString(state).c_str(), is_arrived_task_aera_ ? "true" : "false");
+                return;
+            }
+            transitionTo(ControlState::SEARCH_ADJUST_MANUAL);
+            RCLCPP_INFO(get_logger(), "Command accepted | SEARCH_ADJUST_MANUAL");
+            break;
+        case CommandType::TARG_GOT_CONFIRM:
+            if (!is_arrived_task_aera_ ||
+                !(state == ControlState::HOVERING ||
+                  state == ControlState::SEARCH_ADJUST_AUTO ||
+                  state == ControlState::SEARCH_ADJUST_MANUAL)) {
+                RCLCPP_WARN(get_logger(),
+                            "Command rejected | TARG_GOT_CONFIRM current=%s uavArrivedTaskAera=%s",
+                            stateToString(state).c_str(), is_arrived_task_aera_ ? "true" : "false");
+                return;
+            }
+            clearActiveTarget();
+            adjust_completed_ = true;
+            uav_search_succeed_ = true;
             transitionTo(ControlState::APPROACH_PLANT);
-            RCLCPP_INFO(get_logger(), "Command accepted | APPROACH_PLANT");
+            RCLCPP_INFO(get_logger(), "Command accepted | TARG_GOT_CONFIRM -> APPROACH_PLANT");
             break;
-        case CommandType::RETREAT:
+        case CommandType::SAMP_ADJUST_AUTO:
+            if (state != ControlState::HOVERING || !approach_completed_) {
+                RCLCPP_WARN(get_logger(),
+                            "Command rejected | SAMP_ADJUST_AUTO current=%s uavApproachSucceed=%s",
+                            stateToString(state).c_str(), approach_completed_ ? "true" : "false");
+                return;
+            }
+            transitionTo(ControlState::SAMP_ADJUST_AUTO);
+            RCLCPP_INFO(get_logger(), "Command accepted | SAMP_ADJUST_AUTO");
+            break;
+        case CommandType::SAMP_ADJUST_MANUAL:
+            if (state != ControlState::HOVERING || !approach_completed_) {
+                RCLCPP_WARN(get_logger(),
+                            "Command rejected | SAMP_ADJUST_MANUAL current=%s uavApproachSucceed=%s",
+                            stateToString(state).c_str(), approach_completed_ ? "true" : "false");
+                return;
+            }
+            transitionTo(ControlState::SAMP_ADJUST_MANUAL);
+            RCLCPP_INFO(get_logger(), "Command accepted | SAMP_ADJUST_MANUAL");
+            break;
+        case CommandType::ARM_CONFIG_PREP:
+            if (state == ControlState::SAMP_ADJUST_MANUAL) {
+                uav_adjust_succeed_ = true;
+                arm_config_prepared_ = true;
+                transitionTo(ControlState::HOVERING);
+                RCLCPP_INFO(get_logger(), "Command accepted | ARM_CONFIG_PREP uavAdjustSucceed=1");
+                return;
+            }
+            if (state == ControlState::HOVERING && uav_adjust_succeed_) {
+                arm_config_prepared_ = true;
+                RCLCPP_INFO(get_logger(), "Command accepted | ARM_CONFIG_PREP");
+                return;
+            }
+            RCLCPP_WARN(get_logger(),
+                        "Command rejected | ARM_CONFIG_PREP current=%s uavAdjustSucceed=%s",
+                        stateToString(state).c_str(), uav_adjust_succeed_ ? "true" : "false");
+            break;
+        case CommandType::UAV_PRE_BACK_HOME:
+            if (state == ControlState::UAV_TASK_TERM) {
+                transitionTo(ControlState::RETREAT);
+                RCLCPP_INFO(get_logger(), "Command accepted | UAV_PRE_BACK_HOME from UAV_TASK_TERM");
+                return;
+            }
+            if (state != ControlState::HOVERING || !ready_for_transit_ ||
+                !(uav_adjust_succeed_ || arm_config_prepared_ || approach_completed_)) {
+                RCLCPP_WARN(get_logger(),
+                            "Command rejected | UAV_PRE_BACK_HOME current=%s uavTakeoffSucceed=%s uavAdjustSucceed=%s",
+                            stateToString(state).c_str(), ready_for_transit_ ? "true" : "false",
+                            uav_adjust_succeed_ ? "true" : "false");
+                return;
+            }
+            if (uav_adjust_succeed_) {
+                arm_config_prepared_ = true;
+            }
             transitionTo(ControlState::RETREAT);
-            RCLCPP_INFO(get_logger(), "Command accepted | RETREAT");
+            RCLCPP_INFO(get_logger(), "Command accepted | UAV_PRE_BACK_HOME");
             break;
         case CommandType::BACK_HOME:
+            if (state == ControlState::UAV_TASK_TERM) {
+                transitionTo(ControlState::BACK_HOME);
+                RCLCPP_INFO(get_logger(), "Command accepted | BACK_HOME from UAV_TASK_TERM");
+                return;
+            }
+            if (state != ControlState::HOVERING || !uav_ready_for_back_) {
+                RCLCPP_WARN(get_logger(),
+                            "Command rejected | BACK_HOME current=%s uavReadyForBack=%s",
+                            stateToString(state).c_str(), uav_ready_for_back_ ? "true" : "false");
+                return;
+            }
             transitionTo(ControlState::BACK_HOME);
             RCLCPP_INFO(get_logger(), "Command accepted | BACK_HOME");
             break;
-        case CommandType::MANUAL_OPERA:
-            if (!parsed->manual) {
-                RCLCPP_WARN(get_logger(), "Command rejected | MANUAL requires: MANUAL x y z yaw");
-                return;
+        case CommandType::TASK_TERM:
+            if (state == ControlState::SEARCH_ADJUST_AUTO ||
+                state == ControlState::SEARCH_ADJUST_MANUAL) {
+                adjust_completed_ = false;
+                uav_search_succeed_ = false;
             }
-            manual_command_ = *parsed->manual;
-            transitionTo(ControlState::MANUAL_OPERA);
-            RCLCPP_INFO(get_logger(), "Command accepted | MANUAL_OPERA");
+            if (state == ControlState::SAMP_ADJUST_AUTO ||
+                state == ControlState::SAMP_ADJUST_MANUAL) {
+                uav_adjust_succeed_ = false;
+                arm_config_prepared_ = false;
+            }
+            clearActiveTarget();
+            transitionTo(ControlState::UAV_TASK_TERM);
+            RCLCPP_INFO(get_logger(), "Command accepted | TASK_TERM");
             break;
         case CommandType::CONFIRM:
         case CommandType::SELF_CHECK:
-        case CommandType::TAKEOFF:
+        case CommandType::UAV_START:
             break;
     }
 }
@@ -1191,27 +1382,65 @@ std::string UavOffboardFsm::stateToString(ControlState state)
     switch (state) {
         case ControlState::SELF_CHECK:
             return "SELF_CHECK";
-        case ControlState::TAKEOFF:
-            return "TAKEOFF";
-        case ControlState::HOVERING:
-            return "HOVERING";
+        case ControlState::UAV_START:
+            return "UAV_START";
         case ControlState::TRANSIT_TO_AREA:
             return "TRANSIT_TO_AREA";
-        case ControlState::SEARCH_ADJUST:
-            return "SEARCH_ADJUST";
+        case ControlState::HOVERING:
+            return "HOVERING";
+        case ControlState::SEARCH_ADJUST_AUTO:
+            return "SEARCH_ADJUST_AUTO";
+        case ControlState::SEARCH_ADJUST_MANUAL:
+            return "SEARCH_ADJUST_MANUAL";
         case ControlState::APPROACH_PLANT:
             return "APPROACH_PLANT";
+        case ControlState::SAMP_ADJUST_AUTO:
+            return "SAMP_ADJUST_AUTO";
+        case ControlState::SAMP_ADJUST_MANUAL:
+            return "SAMP_ADJUST_MANUAL";
         case ControlState::RETREAT:
             return "RETREAT";
         case ControlState::BACK_HOME:
             return "BACK_HOME";
-        case ControlState::MANUAL_OPERA:
-            return "MANUAL_OPERA";
+        case ControlState::UAV_TASK_TERM:
+            return "UAV_TASK_TERM";
     }
     return "UNKNOWN";
 }
 
-// 控制指令解析：读取指令首个 token，与参数化命令别名匹配；手动模式还会解析 dx/dy/dz/dyaw。
+// 状态枚举转流程图编号：编号与 v4 流程图中的 uint8 状态值保持一致。
+int UavOffboardFsm::stateToId(ControlState state)
+{
+    switch (state) {
+        case ControlState::SELF_CHECK:
+            return 0;
+        case ControlState::UAV_START:
+            return 1;
+        case ControlState::TRANSIT_TO_AREA:
+            return 2;
+        case ControlState::HOVERING:
+            return 3;
+        case ControlState::SEARCH_ADJUST_AUTO:
+            return 4;
+        case ControlState::SEARCH_ADJUST_MANUAL:
+            return 5;
+        case ControlState::APPROACH_PLANT:
+            return 6;
+        case ControlState::SAMP_ADJUST_AUTO:
+            return 7;
+        case ControlState::SAMP_ADJUST_MANUAL:
+            return 8;
+        case ControlState::RETREAT:
+            return 9;
+        case ControlState::BACK_HOME:
+            return 10;
+        case ControlState::UAV_TASK_TERM:
+            return 11;
+    }
+    return -1;
+}
+
+// 控制指令解析：读取指令首个 token，并与参数化命令别名匹配成 v4 流程图中的任务指令。
 std::optional<UavOffboardFsm::ParsedCommand>
 UavOffboardFsm::parseCommand(const std::string & command) const
 {
@@ -1223,36 +1452,44 @@ UavOffboardFsm::parseCommand(const std::string & command) const
     }
     token = upperCopy(token);
 
-    if (tokenMatches(token, transit_command_aliases_)) {
-        return ParsedCommand{CommandType::TRANSIT_TO_AREA, std::nullopt};
+    if (tokenMatches(token, self_check_command_aliases_)) {
+        return ParsedCommand{CommandType::SELF_CHECK};
     }
-    if (tokenMatches(token, search_command_aliases_)) {
-        return ParsedCommand{CommandType::SEARCH_ADJUST, std::nullopt};
+    if (tokenMatches(token, uav_start_command_aliases_)) {
+        return ParsedCommand{CommandType::UAV_START};
     }
-    if (tokenMatches(token, approach_command_aliases_)) {
-        return ParsedCommand{CommandType::APPROACH_PLANT, std::nullopt};
+    if (tokenMatches(token, nav_to_task_dom_command_aliases_)) {
+        return ParsedCommand{CommandType::NAV_TO_TASK_DOM};
     }
-    if (tokenMatches(token, retreat_command_aliases_)) {
-        return ParsedCommand{CommandType::RETREAT, std::nullopt};
+    if (tokenMatches(token, search_auto_command_aliases_)) {
+        return ParsedCommand{CommandType::SEARCH_ADJUST_AUTO};
+    }
+    if (tokenMatches(token, search_manual_command_aliases_)) {
+        return ParsedCommand{CommandType::SEARCH_ADJUST_MANUAL};
+    }
+    if (tokenMatches(token, targ_got_confirm_command_aliases_)) {
+        return ParsedCommand{CommandType::TARG_GOT_CONFIRM};
+    }
+    if (tokenMatches(token, samp_auto_command_aliases_)) {
+        return ParsedCommand{CommandType::SAMP_ADJUST_AUTO};
+    }
+    if (tokenMatches(token, samp_manual_command_aliases_)) {
+        return ParsedCommand{CommandType::SAMP_ADJUST_MANUAL};
+    }
+    if (tokenMatches(token, arm_config_prep_command_aliases_)) {
+        return ParsedCommand{CommandType::ARM_CONFIG_PREP};
+    }
+    if (tokenMatches(token, uav_pre_back_home_command_aliases_)) {
+        return ParsedCommand{CommandType::UAV_PRE_BACK_HOME};
+    }
+    if (tokenMatches(token, task_term_command_aliases_)) {
+        return ParsedCommand{CommandType::TASK_TERM};
     }
     if (tokenMatches(token, back_home_command_aliases_)) {
-        return ParsedCommand{CommandType::BACK_HOME, std::nullopt};
+        return ParsedCommand{CommandType::BACK_HOME};
     }
     if (tokenMatches(token, confirm_command_aliases_)) {
-        return ParsedCommand{CommandType::CONFIRM, std::nullopt};
-    }
-    if (tokenMatches(token, self_check_command_aliases_)) {
-        return ParsedCommand{CommandType::SELF_CHECK, std::nullopt};
-    }
-    if (tokenMatches(token, takeoff_command_aliases_)) {
-        return ParsedCommand{CommandType::TAKEOFF, std::nullopt};
-    }
-    if (tokenMatches(token, manual_command_aliases_)) {
-        ManualCommand manual;
-        if (!(stream >> manual.dx >> manual.dy >> manual.dz >> manual.dyaw)) {
-            return ParsedCommand{CommandType::MANUAL_OPERA, std::nullopt};
-        }
-        return ParsedCommand{CommandType::MANUAL_OPERA, manual};
+        return ParsedCommand{CommandType::CONFIRM};
     }
 
     return std::nullopt;

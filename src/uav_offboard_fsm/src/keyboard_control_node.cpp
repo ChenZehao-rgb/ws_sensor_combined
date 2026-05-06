@@ -55,9 +55,11 @@ void KeyboardControlNode::startKeyboardListener() {
     keyboard_thread_ = std::thread(&KeyboardControlNode::keyboardLoop, this);
     RCLCPP_INFO(this->get_logger(),
                 "Keyboard control ready\n"
-                "  Shift+S: self-check  Shift+T: takeoff  Shift+R: transit\n"
-                "  Shift+A: search      Shift+P: approach Shift+E: retreat\n"
-                "  Shift+B: back home   Shift+M: manual   Shift+Y: confirm");
+                "  Shift+S: self-check   Shift+T: uav start   Shift+R: nav task dom\n"
+                "  Shift+A: search auto  Shift+Z: search manual  Shift+P: target confirm\n"
+                "  Shift+C: sample auto  Shift+V: sample manual  Shift+O: arm config\n"
+                "  Shift+E: pre back home  Shift+B: back home  Shift+X: task term\n"
+                "  Shift+Y: context confirm");
 }
 
 void KeyboardControlNode::stopKeyboardListener() {
@@ -84,25 +86,37 @@ void KeyboardControlNode::keyboardLoop() {
             publishCommand("SELF_CHECK");
             break;
         case 'T':
-            publishCommand("TAKEOFF");
+            publishCommand("UAV_START");
             break;
         case 'R':
-            publishCommand("TRANSIT_TO_AREA");
+            publishCommand("NAV_TO_TASK_DOM");
             break;
         case 'A':
-            publishCommand("SEARCH_ADJUST");
+            publishCommand("SEARCH_ADJUST_AUTO");
+            break;
+        case 'Z':
+            publishCommand("SEARCH_ADJUST_MANUAL");
             break;
         case 'P':
-            publishCommand("APPROACH_PLANT");
+            publishCommand("TARG_GOT_CONFIRM");
+            break;
+        case 'C':
+            publishCommand("SAMP_ADJUST_AUTO");
+            break;
+        case 'V':
+            publishCommand("SAMP_ADJUST_MANUAL");
+            break;
+        case 'O':
+            publishCommand("ARM_CONFIG_PREP");
             break;
         case 'E':
-            publishCommand("RETREAT");
+            publishCommand("UAV_PRE_BACK_HOME");
             break;
         case 'B':
             publishCommand("BACK_HOME");
             break;
-        case 'M':
-            publishCommand("MANUAL 0.5 0.0 0.0 0.0");
+        case 'X':
+            publishCommand("TASK_TERM");
             break;
         case 'Y':
             publishCommand("CONFIRM");

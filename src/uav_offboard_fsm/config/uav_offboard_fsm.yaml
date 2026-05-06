@@ -42,6 +42,18 @@ uav_offboard_fsm:
     # 后退阶段沿机体系后方退回的距离，单位 m。
     retreat_distance_m: 1.0
 
+    # 采样微调自动模式的机体系前向偏移，单位 m。
+    sample_adjust_forward_m: 0.2
+
+    # 采样微调自动模式的机体系右向偏移，单位 m。
+    sample_adjust_right_m: 0.0
+
+    # 采样微调自动模式的高度偏移，单位 m。
+    sample_adjust_z_offset_m: 0.0
+
+    # 采样微调自动模式的偏航角偏移，单位 rad。
+    sample_adjust_yaw_offset_rad: 0.0
+
     # 下发给轨迹节点的目标速度 [vx, vy, vz]，单位 m/s。
     target_velocity: [0.0, 0.0, 0.0]
 
@@ -84,9 +96,6 @@ uav_offboard_fsm:
     # 悬停状态日志的节流周期，单位 ms。
     hovering_log_throttle_ms: 3000
 
-    # 手动操作需要收到的确认次数。
-    manual_confirmations_required: 2
-
     # 发布给 offboard_control_bridge 的状态话题。
     offboard_state_topic: "/uav_offboard_fsm/offboard_state"
 
@@ -123,15 +132,19 @@ uav_offboard_fsm:
 
     # 控制指令别名；修改这里即可更换上层发来的命令字符串。
     command_aliases:
-      transit_to_area: ["TRANSIT_TO_AREA", "TRANSIT", "TRAJECTORY_TRACKING", "R"]
-      search_adjust: ["SEARCH_ADJUST", "SEARCH", "ADJUST", "A"]
-      approach_plant: ["APPROACH_PLANT", "APPROACH", "P"]
-      retreat: ["RETREAT", "E"]
+      self_check: ["SELF_CHECK", "SELFCHECK", "RESET", "S"]
+      uav_start: ["UAV_START", "TAKEOFF", "WAIT_TASK_ENABLE_AUTH", "T"]
+      nav_to_task_dom: ["NAV_TO_TASK_DOM", "TRANSIT_TO_AREA", "TRANSIT", "TRAJECTORY_TRACKING", "R"]
+      search_adjust_auto: ["SEARCH_ADJUST_AUTO", "SEARCH_ADJUST", "SEARCH_AUTO", "SEARCH", "ADJUST", "A"]
+      search_adjust_manual: ["SEARCH_ADJUST_MANUAL", "SEARCH_MANUAL", "MANUAL_SEARCH", "Z"]
+      targ_got_confirm: ["TARG_GOT_CONFIRM", "TARG_GOT", "APPROACH_PLANT", "APPROACH", "P"]
+      samp_adjust_auto: ["SAMP_ADJUST_AUTO", "SAMPLE_ADJUST_AUTO", "SAMP_AUTO", "C"]
+      samp_adjust_manual: ["SAMP_ADJUST_MANUAL", "SAMPLE_ADJUST_MANUAL", "SAMP_MANUAL", "V"]
+      arm_config_prep: ["ARM_CONFIG_PREP", "SAMPL_OPERA", "SAMPLE_OK", "O"]
+      uav_pre_back_home: ["UAV_PRE_BACK_HOME", "RETREAT", "E"]
+      task_term: ["UAV_TASK_TERM", "TASK_TERM", "FAIL", "X"]
       back_home: ["BACK_HOME", "HOME", "B"]
       confirm: ["CONFIRM", "YES", "Y"]
-      self_check: ["SELF_CHECK", "SELFCHECK", "RESET", "S"]
-      takeoff: ["TAKEOFF", "T"]
-      manual_opera: ["MANUAL_OPERA", "MANUAL", "M"]
 
     # 外部任务状态中表示允许执行任务的字符串。
     mission_state_enabled_aliases: ["ENABLED", "RUNNING", "AUTO"]
