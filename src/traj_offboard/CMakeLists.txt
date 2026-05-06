@@ -35,6 +35,7 @@ endif()
 
 # Generate interfaces (services)
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/BridgeFeedback.msg"
   "srv/SetTarget.srv"
   "srv/GetTrajectorySetpoint.srv"
   DEPENDENCIES

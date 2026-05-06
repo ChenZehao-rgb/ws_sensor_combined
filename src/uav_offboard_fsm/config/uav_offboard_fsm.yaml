@@ -15,14 +15,11 @@ uav_offboard_fsm:
     # 初始任务使能开关；false 时自检不会通过，除非 mission_state_topic 收到使能状态。
     mission_enabled: true
 
-    # 自检是否强制要求测距传感器有新鲜数据。
+    # 自检是否强制要求 bridge 确认测距传感器通信有效。
     require_distance_sensor: false
 
-    # 测距数据超时时间，单位 s。
-    distance_sensor_timeout_s: 1.0
-
-    # 位置/轨迹状态反馈超时时间，单位 s。
-    state_feedback_timeout_s: 1.0
+    # bridge feedback 话题超时时间，单位 s。
+    bridge_feedback_timeout_s: 1.0
 
     # 搜索微调时的偏航角增量，单位 rad。
     search_yaw_offset_rad: 0.35
@@ -63,12 +60,6 @@ uav_offboard_fsm:
     # 下发给轨迹节点的目标偏航角速度，单位 rad/s。
     target_yawspeed: 0.0
 
-    # PX4 heading 转状态机 yaw 时使用的偏置，默认 pi/2，单位 rad。
-    heading_yaw_offset_rad: 1.5707963267948966
-
-    # 测距传感器最小信号质量；PX4 signal_quality 低于该值的数据会被丢弃。
-    distance_sensor_min_signal_quality: 1
-
     # 状态机主循环周期，单位 ms。
     control_loop_period_ms: 50
 
@@ -80,12 +71,6 @@ uav_offboard_fsm:
 
     # 普通订阅器队列深度。
     subscriber_queue_depth: 10
-
-    # 轨迹状态订阅器队列深度。
-    state_feedback_queue_depth: 10
-
-    # PX4 传感器类订阅器队列深度。
-    sensor_queue_depth: 10
 
     # 大多数状态日志的节流周期，单位 ms。
     log_throttle_ms: 2000
@@ -111,17 +96,8 @@ uav_offboard_fsm:
     # 任务使能状态输入话题。
     mission_state_topic: "/uav_offboard_fsm/mission_state"
 
-    # 在线轨迹生成器状态反馈话题。
-    state_feedback_topic: "/online_traj_generator/ruckig_state"
-
-    # PX4 测距传感器话题。
-    distance_sensor_topic: "/fmu/out/distance_sensor"
-
-    # PX4 本地位置话题。
-    vehicle_local_position_topic: "/fmu/out/vehicle_local_position"
-
-    # PX4 home 位置话题。
-    home_position_topic: "/fmu/out/home_position"
+    # offboard_control_bridge 发布的飞控/传感器汇总反馈话题。
+    bridge_feedback_topic: "/uav_offboard_fsm/bridge_feedback"
 
     # 前往任务区航点序列，格式是 [x, y, z, yaw, x, y, z, yaw, ...]。
     transit_waypoints: [
@@ -129,22 +105,6 @@ uav_offboard_fsm:
       5.0, 0.0, 5.0, 0.0,
       5.0, 5.0, 5.0, 1.57079632679
     ]
-
-    # 控制指令别名；修改这里即可更换上层发来的命令字符串。
-    command_aliases:
-      self_check: ["SELF_CHECK", "SELFCHECK", "RESET", "S"]
-      uav_start: ["UAV_START", "TAKEOFF", "WAIT_TASK_ENABLE_AUTH", "T"]
-      nav_to_task_dom: ["NAV_TO_TASK_DOM", "TRANSIT_TO_AREA", "TRANSIT", "TRAJECTORY_TRACKING", "R"]
-      search_adjust_auto: ["SEARCH_ADJUST_AUTO", "SEARCH_ADJUST", "SEARCH_AUTO", "SEARCH", "ADJUST", "A"]
-      search_adjust_manual: ["SEARCH_ADJUST_MANUAL", "SEARCH_MANUAL", "MANUAL_SEARCH", "Z"]
-      targ_got_confirm: ["TARG_GOT_CONFIRM", "TARG_GOT", "APPROACH_PLANT", "APPROACH", "P"]
-      samp_adjust_auto: ["SAMP_ADJUST_AUTO", "SAMPLE_ADJUST_AUTO", "SAMP_AUTO", "C"]
-      samp_adjust_manual: ["SAMP_ADJUST_MANUAL", "SAMPLE_ADJUST_MANUAL", "SAMP_MANUAL", "V"]
-      arm_config_prep: ["ARM_CONFIG_PREP", "SAMPL_OPERA", "SAMPLE_OK", "O"]
-      uav_pre_back_home: ["UAV_PRE_BACK_HOME", "RETREAT", "E"]
-      task_term: ["UAV_TASK_TERM", "TASK_TERM", "FAIL", "X"]
-      back_home: ["BACK_HOME", "HOME", "B"]
-      confirm: ["CONFIRM", "YES", "Y"]
 
     # 外部任务状态中表示允许执行任务的字符串。
     mission_state_enabled_aliases: ["ENABLED", "RUNNING", "AUTO"]

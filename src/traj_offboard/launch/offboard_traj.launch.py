@@ -35,6 +35,7 @@ def generate_launch_description() -> LaunchDescription:
         '/online_traj_generator/ruckig_targ',
         '/uav_offboard_fsm/status',
         '/uav_offboard_fsm/offboard_state',
+        '/uav_offboard_fsm/bridge_feedback',
         '/uav_offboard_fsm/control_command',
         '/fmu/out/vehicle_local_position',
         '/fmu/out/vehicle_attitude',
