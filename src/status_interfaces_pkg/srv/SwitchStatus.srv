@@ -1,0 +1,6 @@
+uint8 current_status
+uint8[] switchable_statuses
+uint8 urgency
+---
+uint8 current_status
+uint8 target_status

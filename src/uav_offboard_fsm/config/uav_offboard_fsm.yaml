@@ -96,17 +96,50 @@ uav_offboard_fsm:
     # 悬停状态日志的节流周期，单位 ms。
     hovering_log_throttle_ms: 3000
 
+    # 总状态机持续发布同一 main_task_state 时，重复处理该状态的最小周期，单位 ms。
+    main_task_repeat_dispatch_period_ms: 500
+
+    # 请求式切换服务的紧急程度，0 最紧急、10 最不紧急；无人机状态机推荐 2/5/8。
+    switch_status_urgency: 5
+
+    # 控制式切换服务的紧急程度，0 最紧急、10 最不紧急；无人机状态机推荐 2/5/8。
+    control_status_urgency: 5
+
+    # true 时请求式切换必须等待 SwitchStatus 服务；false 时可用键盘直接选择自动/手动模式。
+    require_external_switch_service: false
+
+    # true 时 TARG_GOT 等控制式切换必须等待 AirdropStatus 服务；false 时允许键盘本地回退。
+    require_external_control_service: false
+
     # 发布给 offboard_control_bridge 的状态话题。
     offboard_state_topic: "/uav_offboard_fsm/offboard_state"
 
-    # 状态机诊断信息话题。
+    # 当前无人机状态索引话题，类型 status_interfaces_pkg/msg/Status。
     status_topic: "/uav_offboard_fsm/status"
+
+    # 状态机可读诊断信息话题，类型 std_msgs/msg/String。
+    status_text_topic: "/uav_offboard_fsm/status_text"
+
+    # 状态执行完成事件话题，类型 status_interfaces_pkg/msg/StatusExecution。
+    status_execution_topic: "/uav_offboard_fsm/status_execution"
 
     # traj_offboard 的目标设置服务名。
     set_target_service: "online_traj_generator/set_target"
 
     # 控制指令输入话题。
     control_command_topic: "/uav_offboard_fsm/control_command"
+
+    # 总状态机状态输入话题，类型 status_interfaces_pkg/msg/Status，当前可先由键盘控制替代。
+    main_task_status_topic: "/main_task_fsm/status"
+
+    # 请求式切换服务名：无人机作为客户方，请外部从候选状态中选择目标状态。
+    switch_status_service: "/ground_station/switch_status"
+
+    # 控制式批准服务名：无人机作为客户方，请外部批准某些关键切换。
+    airdrop_status_client_service: "/ground_station/airdrop_status"
+
+    # 控制式服务端名：外部作为客户方控制无人机切换状态时调用。
+    airdrop_status_service: "/uav_offboard_fsm/airdrop_status"
 
     # 任务使能状态输入话题。
     mission_state_topic: "/uav_offboard_fsm/mission_state"

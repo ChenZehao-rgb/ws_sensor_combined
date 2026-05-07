@@ -53,13 +53,14 @@ void KeyboardControlNode::startKeyboardListener() {
     termios_configured_ = true;
     stop_keyboard_.store(false);
     keyboard_thread_ = std::thread(&KeyboardControlNode::keyboardLoop, this);
-    RCLCPP_INFO(this->get_logger(),
-                "Keyboard control ready\n"
-                "  Shift+S: SELF_CHECK  Shift+T: WAIT_TASK_ENABLE_AUTH  Shift+R: NAV_TO_TASK_DOM\n"
-                "  Shift+A: SEARCH_ADJUST_AUTO  Shift+Z: SEARCH_ADJUST_MANUAL  Shift+P: TARG_GOT\n"
-                "  Shift+C: SAMP_ADJUST_AUTO  Shift+V: SAMP_ADJUST_MANUAL  Shift+O: ARM_CONFIG_PREP\n"
-                "  Shift+L: SAMPL_OPERA  Shift+E: UAV_PRE_BACK_HOME  Shift+B: BACK_HOME\n"
-                "  Shift+X: NO  Shift+Y: CONFIRM");
+        RCLCPP_INFO(this->get_logger(),
+                    "Keyboard control ready\n"
+                    "  Shift+S: SELF_CHECK  Shift+T: WAIT_TASK_ENABLE_AUTH  Shift+R: NAV_TO_TASK_DOM\n"
+                    "  Shift+U: UAV_SEARCH_TARGS  Shift+A: SEARCH_ADJUST_AUTO  Shift+Z: SEARCH_ADJUST_MANUAL\n"
+                    "  Shift+P: TARG_GOT  Shift+D: TARG_READY  Shift+G: UAV_POSE_ADAP\n"
+                    "  Shift+C: SAMP_ADJUST_AUTO  Shift+V: SAMP_ADJUST_MANUAL  Shift+O: ARM_CONFIG_PREP\n"
+                    "  Shift+L: SAMPL_OPERA  Shift+E: UAV_PRE_BACK_HOME  Shift+B: BACK_HOME\n"
+                    "  Shift+Q: TASK_TERM  Shift+X: NO  Shift+Y: CONFIRM");
 }
 
 void KeyboardControlNode::stopKeyboardListener() {
@@ -88,18 +89,27 @@ void KeyboardControlNode::keyboardLoop() {
         case 'T':
             publishCommand("WAIT_TASK_ENABLE_AUTH");
             break;
-        case 'R':
-            publishCommand("NAV_TO_TASK_DOM");
-            break;
-        case 'A':
-            publishCommand("SEARCH_ADJUST_AUTO");
-            break;
+            case 'R':
+                publishCommand("NAV_TO_TASK_DOM");
+                break;
+            case 'U':
+                publishCommand("UAV_SEARCH_TARGS");
+                break;
+            case 'A':
+                publishCommand("SEARCH_ADJUST_AUTO");
+                break;
         case 'Z':
             publishCommand("SEARCH_ADJUST_MANUAL");
             break;
-        case 'P':
-            publishCommand("TARG_GOT");
-            break;
+            case 'P':
+                publishCommand("TARG_GOT");
+                break;
+            case 'D':
+                publishCommand("TARG_READY");
+                break;
+            case 'G':
+                publishCommand("UAV_POSE_ADAP");
+                break;
         case 'C':
             publishCommand("SAMP_ADJUST_AUTO");
             break;
@@ -115,9 +125,12 @@ void KeyboardControlNode::keyboardLoop() {
         case 'E':
             publishCommand("UAV_PRE_BACK_HOME");
             break;
-        case 'B':
-            publishCommand("BACK_HOME");
-            break;
+            case 'B':
+                publishCommand("BACK_HOME");
+                break;
+            case 'Q':
+                publishCommand("TASK_TERM");
+                break;
         case 'X':
             publishCommand("NO");
             break;

@@ -12,11 +12,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(geometry_msgs REQUIRED)
 find_package(px4_msgs REQUIRED)
-find_package(tf2 REQUIRED)
 find_package(traj_offboard REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(status_interfaces_pkg REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -34,11 +33,10 @@ add_executable(uav_offboard_fsm_node src/uav_offboard_fsm.cpp)
 ament_target_dependencies(uav_offboard_fsm_node
   rclcpp
   sensor_msgs
-  geometry_msgs
   px4_msgs
-  tf2
   traj_offboard
   std_msgs
+  status_interfaces_pkg
 )
 
 add_executable(uav_keyboard_control_node src/keyboard_control_node.cpp)

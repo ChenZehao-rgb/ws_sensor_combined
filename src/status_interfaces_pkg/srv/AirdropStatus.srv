@@ -1,0 +1,5 @@
+uint8 current_status
+uint8 target_status
+uint8 urgency
+---
+bool success
