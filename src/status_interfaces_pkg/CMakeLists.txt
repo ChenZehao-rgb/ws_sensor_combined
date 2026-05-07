@@ -14,6 +14,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/StatusExecution.msg"
   "srv/SwitchStatus.srv"
   "srv/AirdropStatus.srv"
+  "srv/ActuatorControl.srv"
 )
 
 ament_export_dependencies(rosidl_default_runtime)

@@ -7,8 +7,10 @@
 #include <std_msgs/msg/string.hpp>
 #include <status_interfaces_pkg/msg/status.hpp>
 #include <status_interfaces_pkg/msg/status_execution.hpp>
+#include <status_interfaces_pkg/srv/actuator_control.hpp>
 #include <status_interfaces_pkg/srv/airdrop_status.hpp>
 #include <status_interfaces_pkg/srv/switch_status.hpp>
+#include <px4_msgs/msg/vehicle_command.hpp>
 #include <traj_offboard/srv/set_target.hpp>
 
 #include <algorithm>
@@ -119,6 +121,11 @@ class UavOffboardFsm : public rclcpp::Node {
             declare_parameter<std::string>("vehicle_local_position_topic", "/fmu/out/vehicle_local_position");
         const auto home_position_topic =
             declare_parameter<std::string>("home_position_topic", "/fmu/out/home_position");
+        const auto vehicle_command_topic =
+            declare_parameter<std::string>("vehicle_command_topic", "/fmu/in/vehicle_command");
+        const auto actuator_control_service =
+            declare_parameter<std::string>("actuator_control_service",
+                                           "/uav_offboard_fsm/actuator_control");
 
         const std::vector<double> default_transit = {
             0.0, 0.0, takeoff_waypoint_.z, 0.0,
@@ -153,6 +160,8 @@ class UavOffboardFsm : public rclcpp::Node {
         status_execution_pub_ =
             create_publisher<status_interfaces_pkg::msg::StatusExecution>(
                 status_execution_topic, publisher_queue_depth_);
+        vehicle_command_publisher_ =
+            create_publisher<px4_msgs::msg::VehicleCommand>(vehicle_command_topic, publisher_queue_depth_);
 
         //请求轨迹生成服务的客户端，发送目标点给在线轨迹生成器，后者调用ruckig库计算轨迹并发布状态反馈
         set_target_client_ =
@@ -161,6 +170,10 @@ class UavOffboardFsm : public rclcpp::Node {
             create_client<status_interfaces_pkg::srv::SwitchStatus>(switch_status_service);
         airdrop_status_client_ =
             create_client<status_interfaces_pkg::srv::AirdropStatus>(airdrop_status_client_service);
+        actuator_control_srv_ = create_service<status_interfaces_pkg::srv::ActuatorControl>(
+            actuator_control_service,
+            std::bind(&UavOffboardFsm::handleActuatorControl, this,
+                      std::placeholders::_1, std::placeholders::_2));
 
         status_timer_ = create_wall_timer(std::chrono::seconds(1),
                                           std::bind(&UavOffboardFsm::statusPublishOnTimer, this));
@@ -272,6 +285,8 @@ class UavOffboardFsm : public rclcpp::Node {
     rclcpp::Publisher<status_interfaces_pkg::msg::Status>::SharedPtr status_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_text_pub_;
     rclcpp::Publisher<status_interfaces_pkg::msg::StatusExecution>::SharedPtr status_execution_pub_;
+    rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr vehicle_command_publisher_;
+    rclcpp::Service<status_interfaces_pkg::srv::ActuatorControl>::SharedPtr actuator_control_srv_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr control_command_sub_;
     rclcpp::Subscription<status_interfaces_pkg::msg::Status>::SharedPtr main_task_status_sub_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mission_state_sub_;
@@ -395,6 +410,9 @@ class UavOffboardFsm : public rclcpp::Node {
     void handleSampleAdjustManual();
     void handleUavHold();
     void handleRetreat();
+    void handleActuatorControl(
+        const std::shared_ptr<status_interfaces_pkg::srv::ActuatorControl::Request> request,
+        std::shared_ptr<status_interfaces_pkg::srv::ActuatorControl::Response> response);
     void handleBackHome();
     void handleTaskTerm();
 
@@ -404,6 +422,8 @@ class UavOffboardFsm : public rclcpp::Node {
     void setActiveTarget(const Waypoint & waypoint);
     void clearActiveTarget();
     void sendActiveTarget();
+
+    void publish_vehicle_command(uint16_t command, float param1, float param2);
 
     bool isSelfCheckOK();
     bool isUAVTakeoff();
@@ -853,6 +873,57 @@ void UavOffboardFsm::handleUavHold()
 
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
                          "UAV_HOLD | sampling complete; waiting UAV_PRE_BACK_HOME");
+}
+
+void UavOffboardFsm::publish_vehicle_command(uint16_t command, float param1, float param2)
+{
+    px4_msgs::msg::VehicleCommand msg{};
+    msg.param1 = param1;
+    msg.param2 = param2;
+    msg.command = command;
+    msg.target_system = 1;
+    msg.target_component = 1;
+    msg.source_system = 1;
+    msg.source_component = 1;
+    msg.from_external = true;
+    msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+
+    if (vehicle_command_publisher_->get_subscription_count() > 0) {
+        vehicle_command_publisher_->publish(msg);
+        RCLCPP_INFO(this->get_logger(),
+                    "Published vehicle_command - command: %d, param1: %.2f, param2: %.2f",
+                    command, param1, param2);
+    } else {
+        RCLCPP_WARN(this->get_logger(), "No subscribers for /fmu/in/vehicle_command");
+    }
+}
+
+void UavOffboardFsm::handleActuatorControl(
+    const std::shared_ptr<status_interfaces_pkg::srv::ActuatorControl::Request> request,
+    std::shared_ptr<status_interfaces_pkg::srv::ActuatorControl::Response> response)
+{
+    if (control_state_.load() != ControlState::UAV_HOLD) {
+        RCLCPP_WARN(get_logger(),
+                    "ActuatorControl rejected | not in UAV_HOLD (current=%d)",
+                    static_cast<int>(control_state_.load()));
+        response->success = false;
+        return;
+    }
+    
+    if (vehicle_command_publisher_->get_subscription_count() == 0) {
+        RCLCPP_WARN(get_logger(), "ActuatorControl rejected | no FMU subscriber");
+        response->success = false;
+        return;
+    }
+
+    publish_vehicle_command(
+        px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_ACTUATOR,
+        static_cast<float>(request->clab),
+        static_cast<float>(request->cut));
+    response->success = true;
+    RCLCPP_INFO(get_logger(),
+                "ActuatorControl | clab=%d cut=%d -> FMU sent",
+                static_cast<int>(request->clab), static_cast<int>(request->cut));
 }
 
 // 后退处理：返航前沿机体系后方退回安全距离，完成后允许执行 BACK_HOME。
