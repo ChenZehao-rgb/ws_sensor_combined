@@ -27,4 +27,4 @@ uint8 UAV_PRE_BACK_HOME=12
 uint8 BACK_HOME=13
 uint8 TASK_TERM=30
 
-uint8 status
+uint8 uav_control_state

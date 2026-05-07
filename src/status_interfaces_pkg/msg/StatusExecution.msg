@@ -1,4 +1,7 @@
-uint8 current_status
-bool finished
-bool success
-string detail
+bool uav_check_succeed
+bool uav_takeoff_succeed
+bool uav_arrived_task_aera
+bool uav_search_succeed
+bool uav_approach_succeed
+bool uav_adjust_succeed
+bool uav_ready_for_back

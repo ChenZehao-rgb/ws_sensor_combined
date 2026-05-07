@@ -110,8 +110,6 @@ class UavOffboardFsm : public rclcpp::Node {
             declare_parameter<std::string>("switch_status_service", "/ground_station/switch_status");
         const auto airdrop_status_client_service =
             declare_parameter<std::string>("airdrop_status_client_service", "/ground_station/airdrop_status");
-        const auto airdrop_status_service =
-            declare_parameter<std::string>("airdrop_status_service", "/uav_offboard_fsm/airdrop_status");
 
         const auto state_feedback_topic =
             declare_parameter<std::string>("state_feedback_topic", "/online_traj_generator/ruckig_state");
@@ -163,12 +161,10 @@ class UavOffboardFsm : public rclcpp::Node {
             create_client<status_interfaces_pkg::srv::SwitchStatus>(switch_status_service);
         airdrop_status_client_ =
             create_client<status_interfaces_pkg::srv::AirdropStatus>(airdrop_status_client_service);
-        airdrop_status_service_ =
-            create_service<status_interfaces_pkg::srv::AirdropStatus>(
-                airdrop_status_service,
-                std::bind(&UavOffboardFsm::handleAirdropStatusService, this,
-                          std::placeholders::_1, std::placeholders::_2));
-        
+
+        status_timer_ = create_wall_timer(std::chrono::seconds(1),
+                                          std::bind(&UavOffboardFsm::statusPublishOnTimer, this));
+
         control_command_sub_ = create_subscription<std_msgs::msg::String>(
             control_command_topic, subscriber_queue_depth_,
             std::bind(&UavOffboardFsm::handleControlCommand, this, std::placeholders::_1));
@@ -209,9 +205,8 @@ class UavOffboardFsm : public rclcpp::Node {
                     offboard_state_topic.c_str(), status_topic.c_str(),
                     set_target_service.c_str());
         RCLCPP_INFO(get_logger(),
-                    "FSM services | switch_client=%s airdrop_client=%s airdrop_server=%s",
-                    switch_status_service.c_str(), airdrop_status_client_service.c_str(),
-                    airdrop_status_service.c_str());
+                    "FSM services | switch_client=%s airdrop_client=%s",
+                    switch_status_service.c_str(), airdrop_status_client_service.c_str());
         RCLCPP_INFO(get_logger(),
                     "FSM mission defaults | takeoff=(%.2f, %.2f, %.2f, yaw %.2f) mission_enabled=%s require_distance_sensor=%s",
                     takeoff_waypoint_.x, takeoff_waypoint_.y, takeoff_waypoint_.z,
@@ -283,7 +278,7 @@ class UavOffboardFsm : public rclcpp::Node {
     rclcpp::Client<traj_offboard::srv::SetTarget>::SharedPtr set_target_client_;
     rclcpp::Client<status_interfaces_pkg::srv::SwitchStatus>::SharedPtr switch_status_client_;
     rclcpp::Client<status_interfaces_pkg::srv::AirdropStatus>::SharedPtr airdrop_status_client_;
-    rclcpp::Service<status_interfaces_pkg::srv::AirdropStatus>::SharedPtr airdrop_status_service_;
+    rclcpp::TimerBase::SharedPtr status_timer_;
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr ruckig_state_sub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;
     rclcpp::Subscription<px4_msgs::msg::HomePosition>::SharedPtr home_position_sub_;
@@ -426,7 +421,8 @@ class UavOffboardFsm : public rclcpp::Node {
 
     void publishOffboardState(ControlState state);
     void publishStatus(ControlState state);
-    void publishStatusExecution(ControlState state, bool success, const std::string & detail);
+    void publishStatusExecution();
+    void statusPublishOnTimer();
     void handleControlCommand(const std_msgs::msg::String::SharedPtr msg);
     void handleParsedCommand(CommandType command_type, const std::string & source);
     void handleMainTaskStatus(const status_interfaces_pkg::msg::Status::SharedPtr msg);
@@ -435,9 +431,6 @@ class UavOffboardFsm : public rclcpp::Node {
     void handleVehicleLocalPosition(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
     void handleHomePosition(const px4_msgs::msg::HomePosition::SharedPtr msg);
     void handleDistanceSensor(const px4_msgs::msg::DistanceSensor::SharedPtr msg);
-    void handleAirdropStatusService(
-        const std::shared_ptr<status_interfaces_pkg::srv::AirdropStatus::Request> request,
-        std::shared_ptr<status_interfaces_pkg::srv::AirdropStatus::Response> response);
     void requestSwitchChoice(ControlState current_state, const std::vector<ControlState> & candidates,
                              const std::string & reason);
     void requestAirdropTransition(ControlState current_state, ControlState target_state,
@@ -474,7 +467,6 @@ void UavOffboardFsm::controlLoopOnTimer()
     }
 
     publishOffboardState(current_state);
-    publishStatus(current_state);
 
     switch (current_state) {
         case ControlState::SELF_CHECK:        handleSelfCheck();        break;
@@ -630,7 +622,7 @@ void UavOffboardFsm::handleSelfCheck()
 
     ready_for_takeoff_ = true;
     self_check_requested_ = false;
-    publishStatusExecution(ControlState::SELF_CHECK, true, "uavCheckSucceed=1");
+    publishStatusExecution();
     RCLCPP_INFO(get_logger(), "SELF_CHECK complete | uavCheckSucceed=1 waiting WAIT_TASK_ENABLE_AUTH");
 }
 
@@ -659,7 +651,7 @@ void UavOffboardFsm::handleUavStart()
     }
 
     ready_for_transit_ = true;
-    publishStatusExecution(ControlState::UAV_START, true, "uavTakeoffSucceed=1");
+    publishStatusExecution();
     RCLCPP_INFO(get_logger(), "UAV_START complete | uavTakeoffSucceed=1 waiting NAV_TO_TASK_DOM");
 }
 
@@ -693,7 +685,7 @@ void UavOffboardFsm::handleTransitToArea()
 
     if (handleWaypointSequence(transit_waypoints_, transit_index_, "transit")) {
         is_arrived_task_aera_ = true;
-        publishStatusExecution(ControlState::TRANSIT_TO_AREA, true, "uavArrivedTaskAera=1");
+        publishStatusExecution();
         RCLCPP_INFO(get_logger(), "TRANSIT_TO_AREA complete | uavArrivedTaskAera=1");
         transitionTo(ControlState::UAV_ARRIVED_AERA);
     }
@@ -766,7 +758,7 @@ void UavOffboardFsm::handleApproachPlant()
         *latest_distance_m_ <= approach_target_distance_m_ + approach_distance_tolerance_m_) {
         approach_completed_ = true;
         clearActiveTarget();
-        publishStatusExecution(ControlState::APPROACH_PLANT, true, "uavApproachSucceed=1");
+        publishStatusExecution();
         RCLCPP_INFO(get_logger(), "APPROACH_PLANT complete | uavApproachSucceed=1 TARG_READY source=distance_sensor");
         transitionTo(ControlState::UAV_PRE_HOLD);
         return;
@@ -774,7 +766,7 @@ void UavOffboardFsm::handleApproachPlant()
 
     if (handleWaypointSequence(approach_waypoints_, approach_index_, "approach")) {
         approach_completed_ = true;
-        publishStatusExecution(ControlState::APPROACH_PLANT, true, "uavApproachSucceed=1");
+        publishStatusExecution();
         RCLCPP_INFO(get_logger(), "APPROACH_PLANT complete | uavApproachSucceed=1 TARG_READY source=target_arrival");
         transitionTo(ControlState::UAV_PRE_HOLD);
     }
@@ -812,7 +804,7 @@ void UavOffboardFsm::handleSampleAdjustAuto()
 
     if (handleWaypointSequence(sample_adjust_waypoints_, sample_adjust_index_, "sample adjust auto")) {
         uav_adjust_succeed_ = true;
-        publishStatusExecution(ControlState::SAMP_ADJUST_AUTO, true, "uavAdjustSucceed=1");
+        publishStatusExecution();
         RCLCPP_INFO(get_logger(), "SAMP_ADJUST_AUTO complete | uavAdjustSucceed=1 waiting ARM_CONFIG_PREP");
         transitionTo(ControlState::UAV_HOLD);
     }
@@ -876,7 +868,7 @@ void UavOffboardFsm::handleRetreat()
     if (handleWaypointSequence(retreat_waypoints_, retreat_index_, "retreat")) {
         if (!uav_ready_for_back_) {
             uav_ready_for_back_ = true;
-            publishStatusExecution(ControlState::RETREAT, true, "uavReadyForBack=1");
+            publishStatusExecution();
             RCLCPP_INFO(get_logger(), "RETREAT complete | uavReadyForBack=1 waiting BACK_HOME");
         }
     }
@@ -895,7 +887,7 @@ void UavOffboardFsm::handleBackHome()
     if (handleWaypointSequence(back_home_waypoints_, back_home_index_, "back home")) {
         if (!back_home_) {
             back_home_ = true;
-            publishStatusExecution(ControlState::UAV_BACK_HOME, true, "back_home=true");
+            publishStatusExecution();
             RCLCPP_INFO(get_logger(), "UAV_BACK_HOME complete | back_home=true");
         }
     }
@@ -1207,7 +1199,7 @@ void UavOffboardFsm::publishOffboardState(ControlState state)
 void UavOffboardFsm::publishStatus(ControlState state)
 {
         status_interfaces_pkg::msg::Status status_msg;
-        status_msg.status = static_cast<uint8_t>(stateToId(state));
+        status_msg.uav_control_state = static_cast<uint8_t>(stateToId(state));
         status_pub_->publish(status_msg);
 
         std_msgs::msg::String text_msg;
@@ -1237,15 +1229,26 @@ void UavOffboardFsm::publishStatus(ControlState state)
         status_text_pub_->publish(text_msg);
 }
 
-// 发布状态执行结果：每个阶段真正完成、失败或被批准切换时发一次事件，供其他状态机消费。
-void UavOffboardFsm::publishStatusExecution(ControlState state, bool success, const std::string & detail)
+// 发布任务进度标志位：将7个阶段完成布尔量一并发出，供主状态机实时读取。
+void UavOffboardFsm::publishStatusExecution()
 {
         status_interfaces_pkg::msg::StatusExecution msg;
-        msg.current_status = static_cast<uint8_t>(stateToId(state));
-        msg.finished = true;
-        msg.success = success;
-        msg.detail = detail;
+        msg.uav_check_succeed     = ready_for_takeoff_;
+        msg.uav_takeoff_succeed   = ready_for_transit_;
+        msg.uav_arrived_task_aera = is_arrived_task_aera_;
+        msg.uav_search_succeed    = uav_search_succeed_;
+        msg.uav_approach_succeed  = approach_completed_;
+        msg.uav_adjust_succeed    = uav_adjust_succeed_;
+        msg.uav_ready_for_back    = uav_ready_for_back_;
         status_execution_pub_->publish(msg);
+}
+
+// 1Hz 状态发布定时器：周期性向外发布 Status 和 StatusExecution，满足规范的 1Hz 发布要求。
+void UavOffboardFsm::statusPublishOnTimer()
+{
+    std::lock_guard<std::mutex> lock(fsm_mutex_);
+    publishStatus(control_state_.load());
+    publishStatusExecution();
 }
 
 // 控制指令回调：键盘临时控制仍使用字符串，解析后交给统一的流程指令处理函数。
@@ -1279,7 +1282,6 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
                 clearActiveTarget();
                 targ_got_confirm_pending_ = false;
                 task_term_confirm_pending_ = false;
-                publishStatusExecution(state, false, "manual task termination confirmed");
                 transitionTo(ControlState::UAV_TASK_TERM);
                 RCLCPP_INFO(get_logger(), "Command accepted | NO + CONFIRM -> UAV_TASK_TERM");
                 return;
@@ -1289,7 +1291,7 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
                 uav_adjust_succeed_ = true;
                 arm_config_prepared_ = false;
                 sampl_opera_completed_ = false;
-                publishStatusExecution(ControlState::SAMP_ADJUST_MANUAL, true, "uavAdjustSucceed=1 manual_confirm");
+                publishStatusExecution();
                 transitionTo(ControlState::UAV_HOLD);
                 RCLCPP_INFO(get_logger(), "Command accepted | SAMP_ADJUST_MANUAL CONFIRM uavAdjustSucceed=1");
                 return;
@@ -1454,7 +1456,6 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
                 if (state == ControlState::UAV_HOLD && uav_adjust_succeed_ && arm_config_prepared_) {
                     if (!sampl_opera_completed_) {
                         sampl_opera_completed_ = true;
-                        publishStatusExecution(ControlState::UAV_HOLD, true, "sampl_opera_completed=1");
                     }
                     RCLCPP_INFO(get_logger(), "Command accepted | SAMPL_OPERA waiting UAV_PRE_BACK_HOME");
                     return;
@@ -1502,7 +1503,6 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
                 clearActiveTarget();
                 targ_got_confirm_pending_ = false;
                 task_term_confirm_pending_ = false;
-                publishStatusExecution(state, false, "TASK_TERM received");
                 transitionTo(ControlState::UAV_TASK_TERM);
                 RCLCPP_INFO(get_logger(), "Command accepted | TASK_TERM -> UAV_TASK_TERM");
                 break;
@@ -1551,7 +1551,7 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
 void UavOffboardFsm::handleMainTaskStatus(const status_interfaces_pkg::msg::Status::SharedPtr msg)
 {
         const auto now_ns = now().nanoseconds();
-        const int status_value = static_cast<int>(msg->status);
+        const int status_value = static_cast<int>(msg->uav_control_state);
         const int previous = last_main_task_status_.load();
         const int64_t last_dispatch_ns = last_main_task_dispatch_ns_.load();
         const int64_t repeat_period_ns =
@@ -1562,57 +1562,16 @@ void UavOffboardFsm::handleMainTaskStatus(const status_interfaces_pkg::msg::Stat
         last_main_task_status_.store(status_value);
         last_main_task_dispatch_ns_.store(now_ns);
 
-        const auto parsed = commandFromMainTaskStatus(msg->status);
+        const auto parsed = commandFromMainTaskStatus(msg->uav_control_state);
         if (!parsed) {
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                                 "Main task state ignored | status=%u", msg->status);
+                                 "Main task state ignored | status=%u", msg->uav_control_state);
             return;
         }
 
         std::ostringstream source;
-        source << "main_task_state=" << static_cast<int>(msg->status);
+        source << "main_task_state=" << static_cast<int>(msg->uav_control_state);
         handleParsedCommand(parsed->type, source.str());
-}
-
-// AirdropStatus 服务端：外部节点可控制本无人机状态切换，FSM 会按当前状态和完成标志决定是否同意。
-void UavOffboardFsm::handleAirdropStatusService(
-        const std::shared_ptr<status_interfaces_pkg::srv::AirdropStatus::Request> request,
-        std::shared_ptr<status_interfaces_pkg::srv::AirdropStatus::Response> response)
-{
-        std::lock_guard<std::mutex> lock(fsm_mutex_);
-        const auto current_state = control_state_.load();
-        if (request->current_status != static_cast<uint8_t>(stateToId(current_state))) {
-            response->success = false;
-            RCLCPP_WARN(get_logger(),
-                        "AirdropStatus rejected | stale current_status=%u actual=%s",
-                        request->current_status, stateToString(current_state).c_str());
-            return;
-        }
-
-        const auto target_state = statusIdToState(request->target_status);
-        if (!target_state) {
-            response->success = false;
-            RCLCPP_WARN(get_logger(), "AirdropStatus rejected | unknown target_status=%u",
-                        request->target_status);
-            return;
-        }
-
-        if (*target_state == current_state) {
-            response->success = true;
-            RCLCPP_INFO(get_logger(), "AirdropStatus accepted | target is current state=%s",
-                        stateToString(current_state).c_str());
-            return;
-        }
-
-        if (!canAcceptTargetTransition(current_state, *target_state)) {
-            response->success = false;
-            RCLCPP_WARN(get_logger(), "AirdropStatus rejected | current=%s target=%s",
-                        stateToString(current_state).c_str(), stateToString(*target_state).c_str());
-            return;
-        }
-
-        applyApprovedTransition(current_state, *target_state, "airdrop_status_service");
-        response->success = true;
 }
 
 // 请求式切换：向地面站/人工选择端发送可选目标状态，由服务端决定自动或手动分支。
@@ -1766,12 +1725,10 @@ void UavOffboardFsm::applyApprovedTransition(ControlState current_state,
         if (target_state == ControlState::APPROACH_PLANT) {
             adjust_completed_ = true;
             uav_search_succeed_ = true;
-            publishStatusExecution(current_state, true, "uavSearchSucceed=1");
+            publishStatusExecution();
         } else if (target_state == ControlState::UAV_HOLD) {
             uav_adjust_succeed_ = true;
-            publishStatusExecution(current_state, true, "uavAdjustSucceed=1");
-        } else if (target_state == ControlState::UAV_TASK_TERM) {
-            publishStatusExecution(current_state, false, "transitioned_to_task_term");
+            publishStatusExecution();
         }
 
         transitionTo(target_state);

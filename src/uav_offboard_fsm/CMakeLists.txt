@@ -45,6 +45,12 @@ ament_target_dependencies(uav_keyboard_control_node
   std_msgs
 )
 
+add_executable(ground_station_sim_node src/ground_station_sim_node.cpp)
+ament_target_dependencies(ground_station_sim_node
+  rclcpp
+  status_interfaces_pkg
+)
+
 target_include_directories(uav_offboard_fsm_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -52,6 +58,7 @@ target_include_directories(uav_offboard_fsm_node PUBLIC
 install(TARGETS
   uav_offboard_fsm_node
   uav_keyboard_control_node
+  ground_station_sim_node
   DESTINATION lib/${PROJECT_NAME})
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/include")
