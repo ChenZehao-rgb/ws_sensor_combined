@@ -35,7 +35,7 @@ class UavOffboardFsm : public rclcpp::Node {
   public:
     // 构造函数：声明并读取所有 ROS2 参数，随后按参数配置创建发布器、订阅器、服务客户端和状态机定时器。
     UavOffboardFsm() : rclcpp::Node("uav_offboard_fsm") {
-        const std::vector<double> default_takeoff = {0.0, 0.0, 5.0, 0.0};
+        const std::vector<double> default_takeoff = {0.0, 0.0, 5.0, 0.0}; //需要根据轨迹航线确定起始高度
         takeoff_waypoint_ =
             parseSingleWaypointParameter(declare_parameter<std::vector<double>>("takeoff_waypoint", default_takeoff),
                                          {0.0, 0.0, 5.0, 0.0});
@@ -117,11 +117,14 @@ class UavOffboardFsm : public rclcpp::Node {
             "mission_state_enabled_aliases", {"ENABLED", "RUNNING", "AUTO"}));
         mission_disabled_aliases_ = upperCopyList(declare_parameter<std::vector<std::string>>(
             "mission_state_disabled_aliases", {"DISABLED", "ABORT", "STOP"}));
-
+        
+        // 发给底层offboard状态定义
         offboard_state_pub_ =
             create_publisher<std_msgs::msg::String>(offboard_state_topic, publisher_queue_depth_);
+        // 所有状态发布，可以去掉
         status_pub_ = create_publisher<std_msgs::msg::String>(status_topic, publisher_queue_depth_);
 
+        //请求轨迹生成服务的客户端，发送目标点给在线轨迹生成器，后者调用ruckig库计算轨迹并发布状态反馈
         set_target_client_ =
             create_client<traj_offboard::srv::SetTarget>(set_target_service);
         
@@ -1143,6 +1146,7 @@ void UavOffboardFsm::handleControlCommand(const std_msgs::msg::String::SharedPtr
         return;
     }
 
+    // 请求，需要配合地面站服务进行修改
     if (command_type == CommandType::CONFIRM) {
         if (targ_got_confirm_pending_) {
             if (!is_arrived_task_aera_ || !uav_search_succeed_) {

@@ -1,0 +1,7 @@
+bool uavCheckSucceed
+bool uavTakeoffSucceed
+bool uavArrivedTaskAera
+bool uavSearchSucceed
+bool uavApproachSucceed
+bool uavAdjustSucceed
+bool uavReadyForBack
