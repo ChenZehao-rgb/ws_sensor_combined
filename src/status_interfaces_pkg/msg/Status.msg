@@ -1,3 +1,5 @@
+uint8 uav_control_state
+
 uint8 SELF_CHECK=0
 uint8 UAV_START=1
 uint8 TRANSIT_TO_AREA=2
@@ -12,22 +14,6 @@ uint8 UAV_HOLD=10
 uint8 RETREAT=11
 uint8 UAV_BACK_HOME=12
 uint8 UAV_TASK_TERM=13
-
-uint8 PRE_CHECK=1
-uint8 WAIT_TASK_ENABLE_AUTH=2
-uint8 NAV_TO_TASK_DOM=3
-uint8 ARRIVE_TASK_DOM=4
-uint8 UAV_SEARCH_TARGS=6
-uint8 TARG_GOT=7
-uint8 TARG_READY=8
-uint8 UAV_POSE_ADAP=9
-uint8 ARM_CONFIG_PREP=10
-uint8 SAMPL_OPERA=11
-uint8 UAV_PRE_BACK_HOME=12
-uint8 BACK_HOME=13
-uint8 TASK_TERM=30
-
-uint8 uav_control_state
 
 bool uav_check_succeed
 bool uav_takeoff_succeed

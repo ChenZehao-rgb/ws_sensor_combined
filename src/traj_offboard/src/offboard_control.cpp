@@ -23,8 +23,14 @@
 
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
+#include <chrono>
 #include <cmath>
+#include <fstream>
+#include <optional>
 #include <std_msgs/msg/string.hpp>
+#include <sstream>
+#include <string>
+#include <vector>
 
 using namespace std::chrono_literals;
 
@@ -38,6 +44,23 @@ static inline void quat2RPY(const geometry_msgs::msg::Quaternion &quat, double &
 class OffboardControlBridge : public rclcpp::Node {
   public:
     OffboardControlBridge() : rclcpp::Node("offboard_control_bridge") {
+        csv_waypoints_ = loadCsvWaypoints(waypoints_csv_path_);
+        if (!csv_waypoints_.empty()) {
+            takeoff_setpoint_ = makeCsvSetpoint(csv_waypoints_.front());
+            RCLCPP_INFO(get_logger(),
+                        "CSV waypoints loaded | count=%zu path=%s first=(%.2f, %.2f, %.2f, yaw %.2f) velocity=(%.2f, %.2f, %.2f)",
+                        csv_waypoints_.size(), waypoints_csv_path_.c_str(),
+                        csv_waypoints_.front().x, csv_waypoints_.front().y,
+                        csv_waypoints_.front().z, csv_waypoints_.front().yaw,
+                        csv_waypoints_.front().vx, csv_waypoints_.front().vy,
+                        csv_waypoints_.front().vz);
+        } else {
+            takeoff_setpoint_ = makePositionHoldSetpoint(0.0f, 0.0f, 5.0f, static_cast<float>(csv_default_yaw_));
+            RCLCPP_WARN(get_logger(),
+                        "CSV waypoints unavailable | path=%s; using fallback takeoff target=(0.00, 0.00, 5.00)",
+                        waypoints_csv_path_.c_str());
+        }
+
         // Initialize offboard_state_ data
         offboard_state_.data = "WAITINGFORCOMMAND";
         // PX4 pubs
@@ -73,12 +96,26 @@ class OffboardControlBridge : public rclcpp::Node {
             "online_traj_generator/get_trajectory_setpoints", rmw_qos_profile_services_default, client_callback_group_);
 
         // Control timer: pair OffboardControlMode with a setpoint
-        timer_ = this->create_wall_timer(50ms, std::bind(&OffboardControlBridge::controlLoopOnTimer, this));
+        const auto timer_period_ms =
+            std::max(1, static_cast<int>(std::round(1000.0 / csv_stream_rate_hz_)));
+        timer_ = this->create_wall_timer(std::chrono::milliseconds(timer_period_ms),
+                                         std::bind(&OffboardControlBridge::controlLoopOnTimer, this));
         RCLCPP_INFO(get_logger(),
-                    "Offboard bridge ready | fsm_state=/uav_offboard_fsm/offboard_state set_target=online_traj_generator/set_target traj_service=/online_traj_generator/get_trajectory_setpoints");
+                    "Offboard bridge ready | fsm_state=/uav_offboard_fsm/offboard_state set_target=online_traj_generator/set_target traj_service=/online_traj_generator/get_trajectory_setpoints csv_rate=%.2fHz",
+                    csv_stream_rate_hz_);
     }
 
   private:
+    struct CsvWaypoint {
+        double x{0.0};
+        double y{0.0};
+        double z{0.0};
+        double yaw{0.0};
+        double vx{0.0};
+        double vy{0.0};
+        double vz{0.0};
+    };
+
     // State holders
     geometry_msgs::msg::PoseStamped uav_pose_;
     geometry_msgs::msg::TwistStamped uav_twist_;
@@ -86,8 +123,16 @@ class OffboardControlBridge : public rclcpp::Node {
     px4_msgs::msg::HomePosition uav_home_position_;
     std_msgs::msg::String offboard_state_;
     px4_msgs::msg::TrajectorySetpoint target_pose_;
+    px4_msgs::msg::TrajectorySetpoint takeoff_setpoint_{};
     bool update_target_{true}, has_target_{false};
     bool pending_request_{false};
+    std::string waypoints_csv_path_{"/home/sia/zmxROS2/waypoints.csv"};
+    double csv_stream_rate_hz_{50.0};
+    double csv_default_yaw_{0.0};
+    std::vector<CsvWaypoint> csv_waypoints_;
+    std::size_t csv_transit_index_{0};
+    bool csv_transit_complete_logged_{false};
+    bool csv_transit_started_{false};
     
     // Takeoff sequence state management
     enum class FlightState {
@@ -97,7 +142,6 @@ class OffboardControlBridge : public rclcpp::Node {
     };
     FlightState flight_state_{FlightState::WAITINGFORCOMMAND};
     bool takeoff_complete_{false};
-    static constexpr float TAKEOFF_HEIGHT = 5.0f;
     static constexpr float POSITION_TOLERANCE = 0.2f;
 
     // ROS interfaces
@@ -126,16 +170,22 @@ class OffboardControlBridge : public rclcpp::Node {
     void VehicleHomePositionCallback(const px4_msgs::msg::HomePosition::SharedPtr msg);
     void OffboardStateCallback(const std_msgs::msg::String::SharedPtr msg);
 	void publish_offboard_control_mode();
-	void publish_vehicle_command(uint16_t command, float param1 = 0.0f, float param2 = 0.0f);
+    void publish_vehicle_command(uint16_t command, float param1 = 0.0f, float param2 = 0.0f);
     void handle_set_target(const traj_offboard::srv::SetTarget::Request::SharedPtr request,
                            traj_offboard::srv::SetTarget::Response::SharedPtr response);
     void publish_trajectory_setpoint();
+    void publish_csv_transit_setpoint();
+    void reset_csv_transit();
     px4_msgs::msg::TrajectorySetpoint convertENUToNED(const px4_msgs::msg::TrajectorySetpoint &enu_setpoint) const;
     px4_msgs::msg::TrajectorySetpoint makePositionHoldSetpoint(float x, float y, float z, float yaw) const;
+    px4_msgs::msg::TrajectorySetpoint makeCsvSetpoint(const CsvWaypoint & waypoint) const;
     px4_msgs::msg::TrajectorySetpoint publishConvertedSetpoint(px4_msgs::msg::TrajectorySetpoint enu_setpoint);
     bool isArrivedAtPosition(px4_msgs::msg::TrajectorySetpoint setpoint, float tolerance);
     void controlLoopOnTimer();
     void publish_takeoff_setpoint(px4_msgs::msg::TrajectorySetpoint takeoff_setpoint);
+    std::vector<CsvWaypoint> loadCsvWaypoints(const std::string & path) const;
+    std::optional<CsvWaypoint> parseCsvWaypointLine(const std::string & line,
+                                                    std::size_t line_number) const;
 };
 
 void OffboardControlBridge::VehicleLocalPositionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
@@ -174,7 +224,13 @@ void OffboardControlBridge::VehicleHomePositionCallback(const px4_msgs::msg::Hom
                          uav_home_position_.x, uav_home_position_.y, uav_home_position_.z);
 }
 void OffboardControlBridge::OffboardStateCallback(const std_msgs::msg::String::SharedPtr msg) {
+    const auto previous_state = offboard_state_.data;
     offboard_state_ = *msg;
+    if (previous_state != "TRANSIT_TO_AREA" && offboard_state_.data == "TRANSIT_TO_AREA") {
+        reset_csv_transit();
+        RCLCPP_INFO(get_logger(), "CSV transit start | count=%zu rate=%.2fHz",
+                    csv_waypoints_.size(), csv_stream_rate_hz_);
+    }
 }
 void OffboardControlBridge::publish_offboard_control_mode() {
     px4_msgs::msg::OffboardControlMode msg{};
@@ -262,6 +318,18 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makePositionHoldSetpoin
     return setpoint;
 }
 
+px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makeCsvSetpoint(const CsvWaypoint & waypoint) const {
+    px4_msgs::msg::TrajectorySetpoint setpoint{};
+    setpoint.position[0] = static_cast<float>(waypoint.x);
+    setpoint.position[1] = static_cast<float>(waypoint.y);
+    setpoint.position[2] = static_cast<float>(waypoint.z);
+    setpoint.velocity[0] = static_cast<float>(waypoint.vx);
+    setpoint.velocity[1] = static_cast<float>(waypoint.vy);
+    setpoint.velocity[2] = static_cast<float>(waypoint.vz);
+    setpoint.yaw = static_cast<float>(waypoint.yaw);
+    return setpoint;
+}
+
 px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::publishConvertedSetpoint(px4_msgs::msg::TrajectorySetpoint enu_setpoint) {
     enu_setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
     auto ned_setpoint = convertENUToNED(enu_setpoint);
@@ -313,16 +381,55 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
         pending_request_ = false;
         try {
             auto resp = resp_fut.get();
+            if (offboard_state_.data == "TRANSIT_TO_AREA") {
+                RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+                                     "Trajectory response ignored | CSV transit active");
+                return;
+            }
             last_cmd_ = publishConvertedSetpoint(resp->trajectory_setpoint);
             last_cmd_time_ = this->now();
         } catch (const std::exception& e) {
             RCLCPP_ERROR(this->get_logger(), "Trajectory service call failed | error=%s", e.what());
+            if (offboard_state_.data == "TRANSIT_TO_AREA") {
+                return;
+            }
             // hold last command
             last_cmd_ = publishConvertedSetpoint(last_cmd_);
             last_cmd_time_ = this->now();
         }
     });
     update_target_ = false; // reset after sending to traj generator
+}
+
+void OffboardControlBridge::publish_csv_transit_setpoint() {
+    if (csv_waypoints_.empty()) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+                             "CSV transit unavailable | no loaded waypoints");
+        return;
+    }
+
+    csv_transit_started_ = true;
+    const std::size_t publish_index =
+        std::min(csv_transit_index_, csv_waypoints_.size() - 1);
+    last_cmd_ = publishConvertedSetpoint(makeCsvSetpoint(csv_waypoints_[publish_index]));
+    last_cmd_time_ = this->now();
+
+    if (csv_transit_index_ + 1 < csv_waypoints_.size()) {
+        ++csv_transit_index_;
+        return;
+    }
+
+    csv_transit_index_ = csv_waypoints_.size();
+    if (!csv_transit_complete_logged_) {
+        csv_transit_complete_logged_ = true;
+        RCLCPP_INFO(get_logger(), "CSV transit complete | count=%zu", csv_waypoints_.size());
+    }
+}
+
+void OffboardControlBridge::reset_csv_transit() {
+    csv_transit_index_ = 0;
+    csv_transit_complete_logged_ = false;
+    csv_transit_started_ = false;
 }
 
 void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySetpoint takeoff_setpoint) {
@@ -354,10 +461,18 @@ void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySe
         pending_request_ = false;
         try {
             auto resp = resp_fut.get();
+            if (offboard_state_.data == "TRANSIT_TO_AREA") {
+                RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+                                     "Takeoff response ignored | CSV transit active");
+                return;
+            }
             last_cmd_ = publishConvertedSetpoint(resp->trajectory_setpoint);
             last_cmd_time_ = this->now();
         } catch (const std::exception& e) {
             RCLCPP_ERROR(this->get_logger(), "Trajectory service call failed | error=%s", e.what());
+            if (offboard_state_.data == "TRANSIT_TO_AREA") {
+                return;
+            }
             // hold last command
             last_cmd_ = publishConvertedSetpoint(last_cmd_);
             last_cmd_time_ = this->now();
@@ -389,28 +504,39 @@ void OffboardControlBridge::controlLoopOnTimer() {
             if (offboard_setpoint_counter_ < 11) {
                 ++offboard_setpoint_counter_;
             }
-            auto HoverSetpoint = makePositionHoldSetpoint(0.0f, 0.0f, TAKEOFF_HEIGHT, 0.0f);
-            // last_cmd_ = publishConvertedSetpoint(HoverSetpoint);
-            publish_takeoff_setpoint(HoverSetpoint);
-            if (isArrivedAtPosition(HoverSetpoint, POSITION_TOLERANCE)) {
+            publish_takeoff_setpoint(takeoff_setpoint_);
+            if (isArrivedAtPosition(takeoff_setpoint_, POSITION_TOLERANCE)) {
                 takeoff_complete_ = true;
                 flight_state_ = FlightState::TRAJECTORY_FOLLOWING;
                 RCLCPP_INFO(get_logger(), "Bridge state -> TRAJECTORY_FOLLOWING | takeoff complete pos=(%.2f, %.2f, %.2f)", uav_pose_.pose.position.x, uav_pose_.pose.position.y, uav_pose_.pose.position.z);
             }
             else{
                 RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 3000,
-                                     "Takeoff progress | pos=(%.2f, %.2f, %.2f) target=(0.00, 0.00, %.2f)",
+                                     "Takeoff progress | pos=(%.2f, %.2f, %.2f) target=(%.2f, %.2f, %.2f)",
                                      uav_pose_.pose.position.x, uav_pose_.pose.position.y,
-                                     uav_pose_.pose.position.z, TAKEOFF_HEIGHT);
+                                     uav_pose_.pose.position.z,
+                                     takeoff_setpoint_.position[0],
+                                     takeoff_setpoint_.position[1],
+                                     takeoff_setpoint_.position[2]);
             }
             break;
         }
         case FlightState::TRAJECTORY_FOLLOWING: {
+            if (offboard_state_.data == "TRANSIT_TO_AREA" && !csv_waypoints_.empty()) {
+                publish_csv_transit_setpoint();
+                break;
+            }
             if(!has_target_) {
-                RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
-                                     "Trajectory following | waiting for first target from FSM");
-                auto HoverSetpoint = makePositionHoldSetpoint(0.0f, 0.0f, TAKEOFF_HEIGHT, 0.0f);
-                publish_takeoff_setpoint(HoverSetpoint);
+                if (csv_transit_started_ && last_cmd_time_.nanoseconds() != 0) {
+                    RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
+                                         "Trajectory following | holding final CSV setpoint");
+                    last_cmd_ = publishConvertedSetpoint(last_cmd_);
+                    last_cmd_time_ = this->now();
+                } else {
+                    RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
+                                         "Trajectory following | waiting for first target from FSM");
+                    publish_takeoff_setpoint(takeoff_setpoint_);
+                }
                 break;
             }
             publish_trajectory_setpoint();
@@ -418,6 +544,65 @@ void OffboardControlBridge::controlLoopOnTimer() {
         }
     }
 };
+
+std::vector<OffboardControlBridge::CsvWaypoint>
+OffboardControlBridge::loadCsvWaypoints(const std::string & path) const {
+    std::vector<CsvWaypoint> waypoints;
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        return waypoints;
+    }
+
+    std::string line;
+    std::size_t line_number = 0;
+    while (std::getline(file, line)) {
+        ++line_number;
+        const auto waypoint = parseCsvWaypointLine(line, line_number);
+        if (waypoint) {
+            waypoints.push_back(*waypoint);
+        }
+    }
+    return waypoints;
+}
+
+std::optional<OffboardControlBridge::CsvWaypoint>
+OffboardControlBridge::parseCsvWaypointLine(const std::string & line,
+                                            std::size_t line_number) const {
+    if (line.empty()) {
+        return std::nullopt;
+    }
+
+    std::vector<std::string> columns;
+    std::stringstream stream(line);
+    std::string token;
+    while (std::getline(stream, token, ',')) {
+        columns.push_back(token);
+    }
+
+    if (columns.empty() || columns.front() == "index") {
+        return std::nullopt;
+    }
+    if (columns.size() < 7) {
+        RCLCPP_WARN(get_logger(), "CSV waypoint ignored | path=%s line=%zu reason=expected_7_columns",
+                    waypoints_csv_path_.c_str(), line_number);
+        return std::nullopt;
+    }
+
+    try {
+        return CsvWaypoint{
+            std::stod(columns[1]),
+            std::stod(columns[2]),
+            std::stod(columns[3]),
+            csv_default_yaw_,
+            std::stod(columns[4]),
+            std::stod(columns[5]),
+            std::stod(columns[6])};
+    } catch (const std::exception & e) {
+        RCLCPP_WARN(get_logger(), "CSV waypoint ignored | path=%s line=%zu error=%s",
+                    waypoints_csv_path_.c_str(), line_number, e.what());
+        return std::nullopt;
+    }
+}
 
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);

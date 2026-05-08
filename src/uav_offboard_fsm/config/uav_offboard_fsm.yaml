@@ -124,7 +124,7 @@ uav_offboard_fsm:
     control_command_topic: "/uav_offboard_fsm/control_command"
 
     # 总状态机状态输入话题，类型 status_interfaces_pkg/msg/Status，当前可先由键盘控制替代。
-    main_task_status_topic: "/main_task_fsm/status"
+    main_task_status_topic: "/main_task_fsm/task_states"
 
     # 请求式切换服务名：无人机作为客户方，请外部从候选状态中选择目标状态。
     switch_status_service: "/ground_station/switch_status"

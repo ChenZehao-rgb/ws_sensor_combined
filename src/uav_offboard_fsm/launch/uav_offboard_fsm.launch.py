@@ -28,14 +28,14 @@ def generate_launch_description() -> LaunchDescription:
         arguments=['--ros-args', '--log-level', log_level],
     )
 
-    ground_station_sim = Node(
-        package='uav_offboard_fsm',
-        executable='ground_station_sim_node',
-        name='ground_station_sim',
-        output='screen',
-        emulate_tty=True,
-        arguments=['--ros-args', '--log-level', log_level],
-    )
+    # ground_station_sim = Node(
+    #     package='uav_offboard_fsm',
+    #     executable='ground_station_sim_node',
+    #     name='ground_station_sim',
+    #     output='screen',
+    #     emulate_tty=True,
+    #     arguments=['--ros-args', '--log-level', log_level],
+    # )
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -48,5 +48,5 @@ def generate_launch_description() -> LaunchDescription:
             description='ROS log level for uav_offboard_fsm_node'),
         LogInfo(msg=['uav_offboard_fsm: params_file=', params_file]),
         fsm,
-        ground_station_sim,
+        # ground_station_sim,
     ])
