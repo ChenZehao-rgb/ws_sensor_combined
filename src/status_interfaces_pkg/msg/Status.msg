@@ -28,3 +28,11 @@ uint8 BACK_HOME=13
 uint8 TASK_TERM=30
 
 uint8 uav_control_state
+
+bool uav_check_succeed
+bool uav_takeoff_succeed
+bool uav_arrived_task_aera
+bool uav_search_succeed
+bool uav_approach_succeed
+bool uav_adjust_succeed
+bool uav_ready_for_back

@@ -1272,6 +1272,13 @@ void UavOffboardFsm::publishStatus(ControlState state)
 {
         status_interfaces_pkg::msg::Status status_msg;
         status_msg.uav_control_state = static_cast<uint8_t>(stateToId(state));
+        status_msg.uav_check_succeed     = ready_for_takeoff_;
+        status_msg.uav_takeoff_succeed   = ready_for_transit_;
+        status_msg.uav_arrived_task_aera = is_arrived_task_aera_;
+        status_msg.uav_search_succeed    = uav_search_succeed_;
+        status_msg.uav_approach_succeed  = approach_completed_;
+        status_msg.uav_adjust_succeed    = uav_adjust_succeed_;
+        status_msg.uav_ready_for_back    = uav_ready_for_back_;
         status_pub_->publish(status_msg);
 
         std_msgs::msg::String text_msg;
@@ -1651,67 +1658,67 @@ void UavOffboardFsm::requestSwitchChoice(ControlState current_state,
                                           const std::vector<ControlState> & candidates,
                                           const std::string & reason)
 {
-        if (switch_status_request_pending_) {
-            RCLCPP_WARN(get_logger(), "SwitchStatus skipped | request already pending reason=%s",
+    if (switch_status_request_pending_) {
+        RCLCPP_WARN(get_logger(), "SwitchStatus skipped | request already pending reason=%s",
+                    reason.c_str());
+        return;
+    }
+
+    if (!switch_status_client_->service_is_ready()) {
+        if (require_external_switch_service_) {
+            RCLCPP_WARN(get_logger(), "SwitchStatus unavailable | reason=%s", reason.c_str());
+        } else {
+            RCLCPP_WARN(get_logger(),
+                        "SwitchStatus unavailable | reason=%s; use direct keyboard mode command",
                         reason.c_str());
-            return;
         }
+        return;
+    }
 
-        if (!switch_status_client_->service_is_ready()) {
-            if (require_external_switch_service_) {
-                RCLCPP_WARN(get_logger(), "SwitchStatus unavailable | reason=%s", reason.c_str());
-            } else {
-                RCLCPP_WARN(get_logger(),
-                            "SwitchStatus unavailable | reason=%s; use direct keyboard mode command",
-                            reason.c_str());
-            }
-            return;
-        }
+    auto request = std::make_shared<status_interfaces_pkg::srv::SwitchStatus::Request>();
+    request->current_status = static_cast<uint8_t>(stateToId(current_state));
+    request->urgency = static_cast<uint8_t>(switch_status_urgency_);
+    for (const auto candidate : candidates) {
+        request->switchable_statuses.push_back(static_cast<uint8_t>(stateToId(candidate)));
+    }
 
-        auto request = std::make_shared<status_interfaces_pkg::srv::SwitchStatus::Request>();
-        request->current_status = static_cast<uint8_t>(stateToId(current_state));
-        request->urgency = static_cast<uint8_t>(switch_status_urgency_);
-        for (const auto candidate : candidates) {
-            request->switchable_statuses.push_back(static_cast<uint8_t>(stateToId(candidate)));
-        }
-
-        switch_status_request_pending_ = true;
-        switch_status_client_->async_send_request(
-            request,
-            [this, current_state, candidates, reason](
-                rclcpp::Client<status_interfaces_pkg::srv::SwitchStatus>::SharedFuture resp_fut) {
-                std::lock_guard<std::mutex> lock(fsm_mutex_);
-                switch_status_request_pending_ = false;
-                try {
-                    const auto response = resp_fut.get();
-                    if (response->current_status != static_cast<uint8_t>(stateToId(current_state))) {
-                        RCLCPP_WARN(get_logger(),
-                                    "SwitchStatus ignored | stale response current=%u expected=%d",
-                                    response->current_status, stateToId(current_state));
-                        return;
-                    }
-                    const auto target_state = statusIdToState(response->target_status);
-                    if (!target_state) {
-                        RCLCPP_WARN(get_logger(), "SwitchStatus ignored | unknown target=%u",
-                                    response->target_status);
-                        return;
-                    }
-                    if (*target_state == current_state) {
-                        RCLCPP_INFO(get_logger(), "SwitchStatus refused | reason=%s current=%s",
-                                    reason.c_str(), stateToString(current_state).c_str());
-                        return;
-                    }
-                    if (std::find(candidates.begin(), candidates.end(), *target_state) == candidates.end()) {
-                        RCLCPP_WARN(get_logger(), "SwitchStatus ignored | target=%s is not switchable",
-                                    stateToString(*target_state).c_str());
-                        return;
-                    }
-                    applyApprovedTransition(current_state, *target_state, reason);
-                } catch (const std::exception & e) {
-                    RCLCPP_ERROR(get_logger(), "SwitchStatus failed | reason=%s error=%s",
-                                 reason.c_str(), e.what());
+    switch_status_request_pending_ = true;
+    switch_status_client_->async_send_request(
+        request,
+        [this, current_state, candidates, reason](
+            rclcpp::Client<status_interfaces_pkg::srv::SwitchStatus>::SharedFuture resp_fut) {
+            std::lock_guard<std::mutex> lock(fsm_mutex_);
+            switch_status_request_pending_ = false;
+            try {
+                const auto response = resp_fut.get();
+                if (response->current_status != static_cast<uint8_t>(stateToId(current_state))) {
+                    RCLCPP_WARN(get_logger(),
+                                "SwitchStatus ignored | stale response current=%u expected=%d",
+                                response->current_status, stateToId(current_state));
+                    return;
                 }
-            });
+                const auto target_state = statusIdToState(response->target_status);
+                if (!target_state) {
+                    RCLCPP_WARN(get_logger(), "SwitchStatus ignored | unknown target=%u",
+                                response->target_status);
+                    return;
+                }
+                if (*target_state == current_state) {
+                    RCLCPP_INFO(get_logger(), "SwitchStatus refused | reason=%s current=%s",
+                                reason.c_str(), stateToString(current_state).c_str());
+                    return;
+                }
+                if (std::find(candidates.begin(), candidates.end(), *target_state) == candidates.end()) {
+                    RCLCPP_WARN(get_logger(), "SwitchStatus ignored | target=%s is not switchable",
+                                stateToString(*target_state).c_str());
+                    return;
+                }
+                applyApprovedTransition(current_state, *target_state, reason);
+            } catch (const std::exception & e) {
+                RCLCPP_ERROR(get_logger(), "SwitchStatus failed | reason=%s error=%s",
+                                reason.c_str(), e.what());
+            }
+        });
 }
 
 // 控制式切换：需要外部批准时调用 AirdropStatus 服务，未强制外部服务时允许键盘本地回退。
@@ -1719,56 +1726,56 @@ void UavOffboardFsm::requestAirdropTransition(ControlState current_state,
                                                ControlState target_state,
                                                const std::string & reason)
 {
-        if (airdrop_status_request_pending_) {
-            RCLCPP_WARN(get_logger(), "AirdropStatus skipped | request already pending reason=%s",
-                        reason.c_str());
+    if (airdrop_status_request_pending_) {
+        RCLCPP_WARN(get_logger(), "AirdropStatus skipped | request already pending reason=%s",
+                    reason.c_str());
+        return;
+    }
+
+    if (!airdrop_status_client_->service_is_ready()) {
+        if (require_external_control_service_) {
+            RCLCPP_WARN(get_logger(), "AirdropStatus unavailable | reason=%s", reason.c_str());
             return;
         }
+        RCLCPP_WARN(get_logger(),
+                    "AirdropStatus unavailable | reason=%s; local keyboard fallback accepted",
+                    reason.c_str());
+        applyApprovedTransition(current_state, target_state, reason + "_local_fallback");
+        return;
+    }
 
-        if (!airdrop_status_client_->service_is_ready()) {
-            if (require_external_control_service_) {
-                RCLCPP_WARN(get_logger(), "AirdropStatus unavailable | reason=%s", reason.c_str());
-                return;
+    auto request = std::make_shared<status_interfaces_pkg::srv::AirdropStatus::Request>();
+    request->current_status = static_cast<uint8_t>(stateToId(current_state));
+    request->target_status = static_cast<uint8_t>(stateToId(target_state));
+    request->urgency = static_cast<uint8_t>(control_status_urgency_);
+
+    airdrop_status_request_pending_ = true;
+    if (target_state == ControlState::APPROACH_PLANT) {
+        targ_got_confirm_pending_ = true;
+    }
+
+    airdrop_status_client_->async_send_request(
+        request,
+        [this, current_state, target_state, reason](
+            rclcpp::Client<status_interfaces_pkg::srv::AirdropStatus>::SharedFuture resp_fut) {
+            std::lock_guard<std::mutex> lock(fsm_mutex_);
+            airdrop_status_request_pending_ = false;
+            if (target_state == ControlState::APPROACH_PLANT) {
+                targ_got_confirm_pending_ = false;
             }
-            RCLCPP_WARN(get_logger(),
-                        "AirdropStatus unavailable | reason=%s; local keyboard fallback accepted",
-                        reason.c_str());
-            applyApprovedTransition(current_state, target_state, reason + "_local_fallback");
-            return;
-        }
-
-        auto request = std::make_shared<status_interfaces_pkg::srv::AirdropStatus::Request>();
-        request->current_status = static_cast<uint8_t>(stateToId(current_state));
-        request->target_status = static_cast<uint8_t>(stateToId(target_state));
-        request->urgency = static_cast<uint8_t>(control_status_urgency_);
-
-        airdrop_status_request_pending_ = true;
-        if (target_state == ControlState::APPROACH_PLANT) {
-            targ_got_confirm_pending_ = true;
-        }
-
-        airdrop_status_client_->async_send_request(
-            request,
-            [this, current_state, target_state, reason](
-                rclcpp::Client<status_interfaces_pkg::srv::AirdropStatus>::SharedFuture resp_fut) {
-                std::lock_guard<std::mutex> lock(fsm_mutex_);
-                airdrop_status_request_pending_ = false;
-                if (target_state == ControlState::APPROACH_PLANT) {
-                    targ_got_confirm_pending_ = false;
+            try {
+                const auto response = resp_fut.get();
+                if (!response->success) {
+                    RCLCPP_WARN(get_logger(), "AirdropStatus refused | reason=%s target=%s",
+                                reason.c_str(), stateToString(target_state).c_str());
+                    return;
                 }
-                try {
-                    const auto response = resp_fut.get();
-                    if (!response->success) {
-                        RCLCPP_WARN(get_logger(), "AirdropStatus refused | reason=%s target=%s",
-                                    reason.c_str(), stateToString(target_state).c_str());
-                        return;
-                    }
-                    applyApprovedTransition(current_state, target_state, reason);
-                } catch (const std::exception & e) {
-                    RCLCPP_ERROR(get_logger(), "AirdropStatus failed | reason=%s error=%s",
-                                 reason.c_str(), e.what());
-                }
-            });
+                applyApprovedTransition(current_state, target_state, reason);
+            } catch (const std::exception & e) {
+                RCLCPP_ERROR(get_logger(), "AirdropStatus failed | reason=%s error=%s",
+                                reason.c_str(), e.what());
+            }
+        });
 }
 
 // 已获批准的切换：集中处理批准后的标志位更新、执行结果发布和状态跳转。
