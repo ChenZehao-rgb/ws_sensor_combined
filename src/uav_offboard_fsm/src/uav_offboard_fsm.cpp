@@ -105,7 +105,7 @@ class UavOffboardFsm : public rclcpp::Node {
         const auto control_command_topic =
             declare_parameter<std::string>("control_command_topic", "/uav_offboard_fsm/control_command");
         const auto main_task_status_topic =
-            declare_parameter<std::string>("main_task_status_topic", "/main_task_fsm/status");
+            declare_parameter<std::string>("main_task_status_topic", "/main_task_fsm/task_states");
         const auto mission_state_topic =
             declare_parameter<std::string>("mission_state_topic", "/uav_offboard_fsm/mission_state");
         const auto switch_status_service =
@@ -317,6 +317,7 @@ class UavOffboardFsm : public rclcpp::Node {
     std::optional<double> latest_distance_m_;
     rclcpp::Time last_distance_sensor_time_{0, 0, RCL_ROS_TIME};
 
+    //状态机内部状态标志位和参数
     bool ready_for_takeoff_{false};
     bool self_check_requested_{false};
     bool ready_for_transit_{false};
