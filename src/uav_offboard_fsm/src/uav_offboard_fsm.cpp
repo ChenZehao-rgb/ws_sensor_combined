@@ -8,7 +8,6 @@
 #include <status_interfaces_pkg/msg/status.hpp>
 #include <status_interfaces_pkg/msg/status_execution.hpp>
 #include <status_interfaces_pkg/srv/actuator_control.hpp>
-#include <status_interfaces_pkg/srv/airdrop_status.hpp>
 #include <status_interfaces_pkg/srv/switch_status.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <traj_offboard/srv/set_target.hpp>
@@ -86,11 +85,8 @@ class UavOffboardFsm : public rclcpp::Node {
         main_task_repeat_dispatch_period_ms_ = positiveInt(
             declare_parameter<int>("main_task_repeat_dispatch_period_ms", 500));
         switch_status_urgency_ = positiveInt(declare_parameter<int>("switch_status_urgency", 5));
-        control_status_urgency_ = positiveInt(declare_parameter<int>("control_status_urgency", 5));
         require_external_switch_service_ =
             declare_parameter<bool>("require_external_switch_service", false);
-        require_external_control_service_ =
-            declare_parameter<bool>("require_external_control_service", false);
 
         const auto offboard_state_topic =
             declare_parameter<std::string>("offboard_state_topic", "/uav_offboard_fsm/offboard_state");
@@ -110,9 +106,6 @@ class UavOffboardFsm : public rclcpp::Node {
             declare_parameter<std::string>("mission_state_topic", "/uav_offboard_fsm/mission_state");
         const auto switch_status_service =
             declare_parameter<std::string>("switch_status_service", "/ground_station/switch_status");
-        const auto airdrop_status_client_service =
-            declare_parameter<std::string>("airdrop_status_client_service", "/ground_station/airdrop_status");
-
         const auto state_feedback_topic =
             declare_parameter<std::string>("state_feedback_topic", "/online_traj_generator/ruckig_state");
         const auto distance_sensor_topic =
@@ -168,8 +161,6 @@ class UavOffboardFsm : public rclcpp::Node {
             create_client<traj_offboard::srv::SetTarget>(set_target_service);
         switch_status_client_ =
             create_client<status_interfaces_pkg::srv::SwitchStatus>(switch_status_service);
-        airdrop_status_client_ =
-            create_client<status_interfaces_pkg::srv::AirdropStatus>(airdrop_status_client_service);
         actuator_control_srv_ = create_service<status_interfaces_pkg::srv::ActuatorControl>(
             actuator_control_service,
             std::bind(&UavOffboardFsm::handleActuatorControl, this,
@@ -218,8 +209,8 @@ class UavOffboardFsm : public rclcpp::Node {
                     offboard_state_topic.c_str(), status_topic.c_str(),
                     set_target_service.c_str());
         RCLCPP_INFO(get_logger(),
-                    "FSM services | switch_client=%s airdrop_client=%s",
-                    switch_status_service.c_str(), airdrop_status_client_service.c_str());
+                    "FSM services | switch_client=%s",
+                    switch_status_service.c_str());
         RCLCPP_INFO(get_logger(),
                     "FSM mission defaults | takeoff=(%.2f, %.2f, %.2f, yaw %.2f) mission_enabled=%s require_distance_sensor=%s",
                     takeoff_waypoint_.x, takeoff_waypoint_.y, takeoff_waypoint_.z,
@@ -292,7 +283,6 @@ class UavOffboardFsm : public rclcpp::Node {
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mission_state_sub_;
     rclcpp::Client<traj_offboard::srv::SetTarget>::SharedPtr set_target_client_;
     rclcpp::Client<status_interfaces_pkg::srv::SwitchStatus>::SharedPtr switch_status_client_;
-    rclcpp::Client<status_interfaces_pkg::srv::AirdropStatus>::SharedPtr airdrop_status_client_;
     rclcpp::TimerBase::SharedPtr status_timer_;
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr ruckig_state_sub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;
@@ -333,11 +323,9 @@ class UavOffboardFsm : public rclcpp::Node {
     bool targ_got_confirm_pending_{false};
     bool task_term_confirm_pending_{false};
     bool switch_status_request_pending_{false};
-    bool airdrop_status_request_pending_{false};
     bool mission_enabled_{true};
     bool require_distance_sensor_{false};
     bool require_external_switch_service_{false};
-    bool require_external_control_service_{false};
 
     double position_tolerance_{0.25};
     double yaw_tolerance_{0.15};
@@ -369,7 +357,6 @@ class UavOffboardFsm : public rclcpp::Node {
     int hovering_log_throttle_ms_{3000};
     int main_task_repeat_dispatch_period_ms_{500};
     int switch_status_urgency_{5};
-    int control_status_urgency_{5};
 
     std::vector<std::string> mission_enabled_aliases_;
     std::vector<std::string> mission_disabled_aliases_;
@@ -454,8 +441,6 @@ class UavOffboardFsm : public rclcpp::Node {
     void handleDistanceSensor(const px4_msgs::msg::DistanceSensor::SharedPtr msg);
     void requestSwitchChoice(ControlState current_state, const std::vector<ControlState> & candidates,
                              const std::string & reason);
-    void requestAirdropTransition(ControlState current_state, ControlState target_state,
-                                  const std::string & reason);
     void applyApprovedTransition(ControlState current_state, ControlState target_state,
                                  const std::string & reason);
     bool canAcceptTargetTransition(ControlState current_state, ControlState target_state) const;
@@ -615,7 +600,6 @@ void UavOffboardFsm::resetMissionProgress()
     targ_got_confirm_pending_ = false;
     task_term_confirm_pending_ = false;
     switch_status_request_pending_ = false;
-    airdrop_status_request_pending_ = false;
 }
 
 // 自检状态处理：等待 SELF_CHECK 指令，检查总任务使能和可选测距通信，通过后置 uavCheckSucceed=1。
@@ -712,7 +696,7 @@ void UavOffboardFsm::handleTransitToArea()
     }
 }
 
-// 自动搜索处理：到达任务区后执行偏航/横移搜索；锁定目标必须由 TARG_GOT + CONFIRM 单独确认。
+// 自动搜索处理：到达任务区后执行偏航/横移搜索；锁定目标必须由 TARG_GOT 经 SwitchStatus 批准。
 void UavOffboardFsm::handleSearchAdjustAuto()
 {
     if (!is_arrived_task_aera_) {
@@ -724,7 +708,7 @@ void UavOffboardFsm::handleSearchAdjustAuto()
 
     if (targ_got_confirm_pending_) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
-                             "SEARCH_ADJUST_AUTO | TARG_GOT received; waiting AirdropStatus service response for APPROACH_PLANT");
+                             "SEARCH_ADJUST_AUTO | TARG_GOT received; waiting SwitchStatus service response for APPROACH_PLANT");
         return;
     }
     if (task_term_confirm_pending_) {
@@ -740,7 +724,7 @@ void UavOffboardFsm::handleSearchAdjustAuto()
     }
 }
 
-// 手动搜索处理：保持悬停，等待 TARG_GOT + CONFIRM 成功，或 NO + CONFIRM 终止。
+// 手动搜索处理：保持悬停，等待 TARG_GOT 经 SwitchStatus 批准，或 NO + CONFIRM 终止。
 void UavOffboardFsm::handleSearchAdjustManual()
 {
     if (!is_arrived_task_aera_) {
@@ -752,7 +736,7 @@ void UavOffboardFsm::handleSearchAdjustManual()
 
     if (targ_got_confirm_pending_) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
-                             "SEARCH_ADJUST_MANUAL | TARG_GOT received; waiting AirdropStatus service response for APPROACH_PLANT");
+                             "SEARCH_ADJUST_MANUAL | TARG_GOT received; waiting SwitchStatus service response for APPROACH_PLANT");
         return;
     }
     if (task_term_confirm_pending_) {
@@ -1467,12 +1451,12 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
                             "Command rejected | TARG_GOT current=%s TARG_READY=true",
                             stateToString(state).c_str());
                 return;
-                }
-                clearActiveTarget();
-                task_term_confirm_pending_ = false;
-                requestAirdropTransition(state, ControlState::APPROACH_PLANT, "TARG_GOT");
-                RCLCPP_INFO(get_logger(), "Command accepted | TARG_GOT waiting APPROACH_PLANT approval");
-                break;
+            }
+            clearActiveTarget();
+            task_term_confirm_pending_ = false;
+            requestSwitchChoice(state, {ControlState::APPROACH_PLANT}, "TARG_GOT");
+            RCLCPP_INFO(get_logger(), "Command accepted | TARG_GOT waiting APPROACH_PLANT approval");
+            break;
             case CommandType::TARG_READY:
                 if (state == ControlState::APPROACH_PLANT && approach_completed_) {
                     transitionTo(ControlState::UAV_PRE_HOLD);
@@ -1653,11 +1637,17 @@ void UavOffboardFsm::handleMainTaskStatus(const status_interfaces_pkg::msg::Stat
         handleParsedCommand(parsed->type, source.str());
 }
 
-// 请求式切换：向地面站/人工选择端发送可选目标状态，由服务端决定自动或手动分支。
+// 请求式切换：向地面站/人工选择端发送可选目标状态；单候选时表示请求批准该固定目标。
 void UavOffboardFsm::requestSwitchChoice(ControlState current_state,
                                           const std::vector<ControlState> & candidates,
                                           const std::string & reason)
 {
+    if (candidates.empty()) {
+        RCLCPP_WARN(get_logger(), "SwitchStatus skipped | empty candidate list reason=%s",
+                    reason.c_str());
+        return;
+    }
+
     if (switch_status_request_pending_) {
         RCLCPP_WARN(get_logger(), "SwitchStatus skipped | request already pending reason=%s",
                     reason.c_str());
@@ -1667,11 +1657,18 @@ void UavOffboardFsm::requestSwitchChoice(ControlState current_state,
     if (!switch_status_client_->service_is_ready()) {
         if (require_external_switch_service_) {
             RCLCPP_WARN(get_logger(), "SwitchStatus unavailable | reason=%s", reason.c_str());
-        } else {
-            RCLCPP_WARN(get_logger(),
-                        "SwitchStatus unavailable | reason=%s; use direct keyboard mode command",
-                        reason.c_str());
+            return;
         }
+        if (candidates.size() == 1) {
+            RCLCPP_WARN(get_logger(),
+                        "SwitchStatus unavailable | reason=%s; single-candidate local fallback accepted",
+                        reason.c_str());
+            applyApprovedTransition(current_state, candidates.front(), reason + "_local_fallback");
+            return;
+        }
+        RCLCPP_WARN(get_logger(),
+                    "SwitchStatus unavailable | reason=%s; use direct keyboard mode command",
+                    reason.c_str());
         return;
     }
 
@@ -1683,12 +1680,20 @@ void UavOffboardFsm::requestSwitchChoice(ControlState current_state,
     }
 
     switch_status_request_pending_ = true;
+    const bool tracks_targ_got =
+        std::find(candidates.begin(), candidates.end(), ControlState::APPROACH_PLANT) != candidates.end();
+    if (tracks_targ_got) {
+        targ_got_confirm_pending_ = true;
+    }
     switch_status_client_->async_send_request(
         request,
-        [this, current_state, candidates, reason](
+        [this, current_state, candidates, reason, tracks_targ_got](
             rclcpp::Client<status_interfaces_pkg::srv::SwitchStatus>::SharedFuture resp_fut) {
             std::lock_guard<std::mutex> lock(fsm_mutex_);
             switch_status_request_pending_ = false;
+            if (tracks_targ_got) {
+                targ_got_confirm_pending_ = false;
+            }
             try {
                 const auto response = resp_fut.get();
                 if (response->current_status != static_cast<uint8_t>(stateToId(current_state))) {
@@ -1716,63 +1721,6 @@ void UavOffboardFsm::requestSwitchChoice(ControlState current_state,
                 applyApprovedTransition(current_state, *target_state, reason);
             } catch (const std::exception & e) {
                 RCLCPP_ERROR(get_logger(), "SwitchStatus failed | reason=%s error=%s",
-                                reason.c_str(), e.what());
-            }
-        });
-}
-
-// 控制式切换：需要外部批准时调用 AirdropStatus 服务，未强制外部服务时允许键盘本地回退。
-void UavOffboardFsm::requestAirdropTransition(ControlState current_state,
-                                               ControlState target_state,
-                                               const std::string & reason)
-{
-    if (airdrop_status_request_pending_) {
-        RCLCPP_WARN(get_logger(), "AirdropStatus skipped | request already pending reason=%s",
-                    reason.c_str());
-        return;
-    }
-
-    if (!airdrop_status_client_->service_is_ready()) {
-        if (require_external_control_service_) {
-            RCLCPP_WARN(get_logger(), "AirdropStatus unavailable | reason=%s", reason.c_str());
-            return;
-        }
-        RCLCPP_WARN(get_logger(),
-                    "AirdropStatus unavailable | reason=%s; local keyboard fallback accepted",
-                    reason.c_str());
-        applyApprovedTransition(current_state, target_state, reason + "_local_fallback");
-        return;
-    }
-
-    auto request = std::make_shared<status_interfaces_pkg::srv::AirdropStatus::Request>();
-    request->current_status = static_cast<uint8_t>(stateToId(current_state));
-    request->target_status = static_cast<uint8_t>(stateToId(target_state));
-    request->urgency = static_cast<uint8_t>(control_status_urgency_);
-
-    airdrop_status_request_pending_ = true;
-    if (target_state == ControlState::APPROACH_PLANT) {
-        targ_got_confirm_pending_ = true;
-    }
-
-    airdrop_status_client_->async_send_request(
-        request,
-        [this, current_state, target_state, reason](
-            rclcpp::Client<status_interfaces_pkg::srv::AirdropStatus>::SharedFuture resp_fut) {
-            std::lock_guard<std::mutex> lock(fsm_mutex_);
-            airdrop_status_request_pending_ = false;
-            if (target_state == ControlState::APPROACH_PLANT) {
-                targ_got_confirm_pending_ = false;
-            }
-            try {
-                const auto response = resp_fut.get();
-                if (!response->success) {
-                    RCLCPP_WARN(get_logger(), "AirdropStatus refused | reason=%s target=%s",
-                                reason.c_str(), stateToString(target_state).c_str());
-                    return;
-                }
-                applyApprovedTransition(current_state, target_state, reason);
-            } catch (const std::exception & e) {
-                RCLCPP_ERROR(get_logger(), "AirdropStatus failed | reason=%s error=%s",
                                 reason.c_str(), e.what());
             }
         });

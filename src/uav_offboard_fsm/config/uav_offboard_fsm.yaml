@@ -102,14 +102,8 @@ uav_offboard_fsm:
     # 请求式切换服务的紧急程度，0 最紧急、10 最不紧急；无人机状态机推荐 2/5/8。
     switch_status_urgency: 5
 
-    # 控制式切换服务的紧急程度，0 最紧急、10 最不紧急；无人机状态机推荐 2/5/8。
-    control_status_urgency: 5
-
     # true 时请求式切换必须等待 SwitchStatus 服务；false 时可用键盘直接选择自动/手动模式。
     require_external_switch_service: false
-
-    # true 时 TARG_GOT 等控制式切换必须等待 AirdropStatus 服务；false 时允许键盘本地回退。
-    require_external_control_service: false
 
     # 发布给 offboard_control_bridge 的状态话题。
     offboard_state_topic: "/uav_offboard_fsm/offboard_state"
@@ -134,12 +128,6 @@ uav_offboard_fsm:
 
     # 请求式切换服务名：无人机作为客户方，请外部从候选状态中选择目标状态。
     switch_status_service: "/ground_station/switch_status"
-
-    # 控制式批准服务名：无人机作为客户方，请外部批准某些关键切换。
-    airdrop_status_client_service: "/ground_station/airdrop_status"
-
-    # 控制式服务端名：外部作为客户方控制无人机切换状态时调用。
-    airdrop_status_service: "/uav_offboard_fsm/airdrop_status"
 
     # 任务使能状态输入话题。
     mission_state_topic: "/uav_offboard_fsm/mission_state"
