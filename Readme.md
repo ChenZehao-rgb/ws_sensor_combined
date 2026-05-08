@@ -136,6 +136,11 @@ sudo apt install ros-humble-plotjuggler-ros
 
 在 ROS 2 中启动：
 
+需要先
+```bash
+source install/setup.bash
+```
+来获取编译环境；然后再
 ```bash
 ros2 run plotjuggler plotjuggler
 ```
@@ -161,6 +166,7 @@ mkdir -p build
 cd build
 cmake -DCMAKE_BUILD_TYPE=Release ..
 make
+sudo make install
 ```
 
 如果提示缺少 `format` 头文件，可安装 GCC 13：
@@ -327,7 +333,11 @@ publish_vehicle_command(
 
 先按第 1 节安装 Ruckig 库环境；这是底层的轨迹规划库。
 
-将 `~/PX4-Autopilot/msg` 下的所有文件复制到 `~/ws_sensor_combined/src/px4_msgs/msg` 中。
+然后将px4_msg库git到src目录下，并切换到1.16分支
+```bash
+git clone https://github.com/PX4/px4_msgs.git
+git checkout release/1.16
+```
 
 编译工作空间：
 
@@ -342,6 +352,11 @@ colcon build
 
 ```bash
 MicroXRCEAgent udp4 -p 8888
+```
+
+与实际飞控连接可以使用：
+```bash
+MicroXRCEAgent serial --dev /dev/ttyUSB0 -b 921600
 ```
 
 **Terminal 2**
@@ -363,7 +378,7 @@ ros2 launch traj_offboard offboard_traj.launch.py
 ```bash
 cd /ws_sensor_combined
 source install/setup.bash
-ros2 run uav_offboard_fsm uav_offboard_fsm_node
+ros2 launch uav_offboard_fsm uav_offboard_fsm.launch.py
 ```
 
 **Terminal 5-按键控制**
@@ -377,3 +392,9 @@ ros2 run uav_offboard_fsm uav_keyboard_control_node
 **Terminal 6**
 
 打开地面站。
+
+注意：需打开地面站才能ready to fly，才能正确切到offboard模式；
+如果使用jetson，没有地面站的情况下，需要在 PX4 的 pxh> 终端里设置：
+```bash
+param set NAV_DLL_ACT 0
+```

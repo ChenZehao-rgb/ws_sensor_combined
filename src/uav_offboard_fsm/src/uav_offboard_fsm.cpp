@@ -175,7 +175,7 @@ class UavOffboardFsm : public rclcpp::Node {
             std::bind(&UavOffboardFsm::handleActuatorControl, this,
                       std::placeholders::_1, std::placeholders::_2));
 
-        status_timer_ = create_wall_timer(std::chrono::seconds(1),
+        status_timer_ = create_wall_timer(std::chrono::milliseconds(50),
                                           std::bind(&UavOffboardFsm::statusPublishOnTimer, this));
 
         control_command_sub_ = create_subscription<std_msgs::msg::String>(
