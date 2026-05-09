@@ -1077,7 +1077,7 @@ void UavOffboardFsm::sendActiveTarget()
                 if (resp->success) {
                     active_target_sent_ = true;
                     RCLCPP_INFO(get_logger(),
-                                "Target sent | service=online_traj_generator/set_target target=(%.2f, %.2f, %.2f, yaw %.2f)",
+                                "Target accepted by bridge | service=online_traj_generator/set_target target=(%.2f, %.2f, %.2f, yaw %.2f)",
                                 target.x, target.y, target.z, target.yaw);
                 } else {
                     active_target_sent_ = false;

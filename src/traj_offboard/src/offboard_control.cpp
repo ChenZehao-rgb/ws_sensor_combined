@@ -23,7 +23,10 @@
 
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
+#include <cinttypes>
+#include <cstdint>
 #include <cmath>
+#include <mutex>
 #include <std_msgs/msg/string.hpp>
 
 using namespace std::chrono_literals;
@@ -86,8 +89,11 @@ class OffboardControlBridge : public rclcpp::Node {
     px4_msgs::msg::HomePosition uav_home_position_;
     std_msgs::msg::String offboard_state_;
     px4_msgs::msg::TrajectorySetpoint target_pose_;
-    bool update_target_{true}, has_target_{false};
+    bool has_target_{false};
     bool pending_request_{false};
+    uint64_t target_generation_{0};
+    uint64_t forwarded_target_generation_{0};
+    std::mutex bridge_mutex_;
     
     // Takeoff sequence state management
     enum class FlightState {
@@ -189,12 +195,14 @@ void OffboardControlBridge::publish_offboard_control_mode() {
 
 void OffboardControlBridge::handle_set_target(const traj_offboard::srv::SetTarget::Request::SharedPtr request,
                                               traj_offboard::srv::SetTarget::Response::SharedPtr response) {
+    std::lock_guard<std::mutex> lock(bridge_mutex_);
     target_pose_ = request->target;
+    ++target_generation_;
     response->success = true;
-    update_target_ = true;
     has_target_ = true;
     RCLCPP_INFO(get_logger(),
-                "Target received | enu=(%.2f, %.2f, %.2f, yaw %.2f)",
+                "Target received | generation=%" PRIu64 " enu=(%.2f, %.2f, %.2f, yaw %.2f)",
+                target_generation_,
                 target_pose_.position[0], target_pose_.position[1],
                 target_pose_.position[2], target_pose_.yaw);
 }
@@ -282,16 +290,28 @@ bool OffboardControlBridge::isArrivedAtPosition(px4_msgs::msg::TrajectorySetpoin
 
 void OffboardControlBridge::publish_trajectory_setpoint() {
     px4_msgs::msg::TrajectorySetpoint current_state;
+    px4_msgs::msg::TrajectorySetpoint target_pose;
+    uint64_t sent_generation = 0;
+    bool sent_target_update = false;
+
     while (!get_traj_setpoint_client_->service_is_ready()) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
                              "Trajectory service unavailable | waiting for /online_traj_generator/get_trajectory_setpoints");
         return;
     }
-    if(pending_request_) {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-                             "Trajectory request pending | skipping until previous response returns");
-        return;
+    {
+        std::lock_guard<std::mutex> lock(bridge_mutex_);
+        if(pending_request_) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                                 "Trajectory request pending | skipping until previous response returns");
+            return;
+        }
+        target_pose = target_pose_;
+        sent_generation = target_generation_;
+        sent_target_update = sent_generation != forwarded_target_generation_;
+        pending_request_ = true;
     }
+
     current_state.position[0] = uav_pose_.pose.position.x;
     current_state.position[1] = uav_pose_.pose.position.y;
     current_state.position[2] = uav_pose_.pose.position.z;
@@ -301,28 +321,37 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
 
     auto request = std::make_shared<traj_offboard::srv::GetTrajectorySetpoint::Request>();
     request->current_state = current_state;
-    request->target = target_pose_;
-    if(update_target_) {
-        request->update_target = true;
-    } else {
-        request->update_target = false;
-    }
-    pending_request_ = true;
+    request->target = target_pose;
+    request->update_target = sent_target_update;
 
-    auto result = get_traj_setpoint_client_->async_send_request(request, [this](rclcpp::Client<traj_offboard::srv::GetTrajectorySetpoint>::SharedFuture resp_fut) {
-        pending_request_ = false;
+    auto result = get_traj_setpoint_client_->async_send_request(request, [this, sent_generation, sent_target_update, target_pose](rclcpp::Client<traj_offboard::srv::GetTrajectorySetpoint>::SharedFuture resp_fut) {
+        std::lock_guard<std::mutex> lock(bridge_mutex_);
         try {
             auto resp = resp_fut.get();
+            pending_request_ = false;
+            if (!resp->success) {
+                RCLCPP_ERROR(this->get_logger(),
+                             "Trajectory service rejected request | generation=%" PRIu64 " update_target=%s",
+                             sent_generation, sent_target_update ? "true" : "false");
+                return;
+            }
+            if (sent_target_update && forwarded_target_generation_ < sent_generation) {
+                forwarded_target_generation_ = sent_generation;
+                RCLCPP_INFO(this->get_logger(),
+                            "Target forwarded to trajectory generator | generation=%" PRIu64 " target=(%.2f, %.2f, %.2f, yaw %.2f)",
+                            sent_generation, target_pose.position[0], target_pose.position[1],
+                            target_pose.position[2], target_pose.yaw);
+            }
             last_cmd_ = publishConvertedSetpoint(resp->trajectory_setpoint);
             last_cmd_time_ = this->now();
         } catch (const std::exception& e) {
+            pending_request_ = false;
             RCLCPP_ERROR(this->get_logger(), "Trajectory service call failed | error=%s", e.what());
             // hold last command
             last_cmd_ = publishConvertedSetpoint(last_cmd_);
             last_cmd_time_ = this->now();
         }
     });
-    update_target_ = false; // reset after sending to traj generator
 }
 
 void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySetpoint takeoff_setpoint) {
@@ -332,11 +361,16 @@ void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySe
                              "Trajectory service unavailable | waiting for /online_traj_generator/get_trajectory_setpoints");
         return;
     }
-    if(pending_request_) {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-                             "Trajectory request pending | skipping until previous response returns");
-        return;
+    {
+        std::lock_guard<std::mutex> lock(bridge_mutex_);
+        if(pending_request_) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                                 "Trajectory request pending | skipping until previous response returns");
+            return;
+        }
+        pending_request_ = true;
     }
+
     current_state.position[0] = uav_pose_.pose.position.x;
     current_state.position[1] = uav_pose_.pose.position.y;
     current_state.position[2] = uav_pose_.pose.position.z;
@@ -348,22 +382,26 @@ void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySe
     request->current_state = current_state;
     request->target = takeoff_setpoint;
     request->update_target = true;
-    pending_request_ = true;
 
     auto result = get_traj_setpoint_client_->async_send_request(request, [this](rclcpp::Client<traj_offboard::srv::GetTrajectorySetpoint>::SharedFuture resp_fut) {
-        pending_request_ = false;
+        std::lock_guard<std::mutex> lock(bridge_mutex_);
         try {
             auto resp = resp_fut.get();
+            pending_request_ = false;
+            if (!resp->success) {
+                RCLCPP_ERROR(this->get_logger(), "Takeoff trajectory service rejected request");
+                return;
+            }
             last_cmd_ = publishConvertedSetpoint(resp->trajectory_setpoint);
             last_cmd_time_ = this->now();
         } catch (const std::exception& e) {
+            pending_request_ = false;
             RCLCPP_ERROR(this->get_logger(), "Trajectory service call failed | error=%s", e.what());
             // hold last command
             last_cmd_ = publishConvertedSetpoint(last_cmd_);
             last_cmd_time_ = this->now();
         }
     });
-    update_target_ = false; // reset after sending to traj generator
 }
 void OffboardControlBridge::controlLoopOnTimer() {
     publish_offboard_control_mode();
@@ -406,7 +444,12 @@ void OffboardControlBridge::controlLoopOnTimer() {
             break;
         }
         case FlightState::TRAJECTORY_FOLLOWING: {
-            if(!has_target_) {
+            bool has_target = false;
+            {
+                std::lock_guard<std::mutex> lock(bridge_mutex_);
+                has_target = has_target_;
+            }
+            if(!has_target) {
                 RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
                                      "Trajectory following | waiting for first target from FSM");
                 auto HoverSetpoint = makePositionHoldSetpoint(0.0f, 0.0f, TAKEOFF_HEIGHT, 0.0f);
