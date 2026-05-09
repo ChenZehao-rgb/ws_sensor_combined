@@ -1521,11 +1521,18 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
                 RCLCPP_INFO(get_logger(), "Command accepted | SAMP_ADJUST_MANUAL");
                 break;
             case CommandType::ARM_CONFIG_PREP:
+                if (state == ControlState::UAV_PRE_HOLD && approach_completed_) {
+                    uav_adjust_succeed_ = true;
+                    arm_config_prepared_ = true;
+                    transitionTo(ControlState::UAV_HOLD);
+                    RCLCPP_INFO(get_logger(), "Command accepted | ARM_CONFIG_PREP -> UAV_HOLD");
+                    return;
+                }
                 if (state == ControlState::UAV_HOLD && uav_adjust_succeed_) {
                     arm_config_prepared_ = true;
                     RCLCPP_INFO(get_logger(), "Command accepted | ARM_CONFIG_PREP waiting SAMPL_OPERA");
                     return;
-            }
+                }
             RCLCPP_WARN(get_logger(),
                         "Command rejected | ARM_CONFIG_PREP current=%s uavAdjustSucceed=%s",
                         stateToString(state).c_str(), uav_adjust_succeed_ ? "true" : "false");
@@ -1663,11 +1670,11 @@ void UavOffboardFsm::requestSwitchChoice(ControlState current_state,
         return;
     }
 
-    if (switch_status_request_pending_) {
-        RCLCPP_WARN(get_logger(), "SwitchStatus skipped | request already pending reason=%s",
-                    reason.c_str());
-        return;
-    }
+    // if (switch_status_request_pending_) {
+    //     RCLCPP_WARN(get_logger(), "SwitchStatus skipped | request already pending reason=%s",
+    //                 reason.c_str());
+    //     return;
+    // }
 
     if (!switch_status_client_->service_is_ready()) {
         if (require_external_switch_service_) {
