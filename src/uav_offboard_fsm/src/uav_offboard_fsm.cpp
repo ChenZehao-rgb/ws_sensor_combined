@@ -5,6 +5,7 @@
 #include <px4_msgs/msg/vehicle_local_position.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <status_interfaces_pkg/msg/task_fsm.hpp>
 #include <status_interfaces_pkg/msg/status.hpp>
 #include <status_interfaces_pkg/msg/status_execution.hpp>
 #include <status_interfaces_pkg/srv/actuator_control.hpp>
@@ -173,7 +174,7 @@ class UavOffboardFsm : public rclcpp::Node {
             control_command_topic, subscriber_queue_depth_,
             std::bind(&UavOffboardFsm::handleControlCommand, this, std::placeholders::_1));
 
-        main_task_status_sub_ = create_subscription<status_interfaces_pkg::msg::Status>(
+        main_task_status_sub_ = create_subscription<status_interfaces_pkg::msg::TaskFSM>(
             main_task_status_topic, subscriber_queue_depth_,
             std::bind(&UavOffboardFsm::handleMainTaskStatus, this, std::placeholders::_1));
 
@@ -279,7 +280,7 @@ class UavOffboardFsm : public rclcpp::Node {
     rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr vehicle_command_publisher_;
     rclcpp::Service<status_interfaces_pkg::srv::ActuatorControl>::SharedPtr actuator_control_srv_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr control_command_sub_;
-    rclcpp::Subscription<status_interfaces_pkg::msg::Status>::SharedPtr main_task_status_sub_;
+    rclcpp::Subscription<status_interfaces_pkg::msg::TaskFSM>::SharedPtr main_task_status_sub_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mission_state_sub_;
     rclcpp::Client<traj_offboard::srv::SetTarget>::SharedPtr set_target_client_;
     rclcpp::Client<status_interfaces_pkg::srv::SwitchStatus>::SharedPtr switch_status_client_;
@@ -330,6 +331,7 @@ class UavOffboardFsm : public rclcpp::Node {
     double position_tolerance_{0.25};
     double yaw_tolerance_{0.15};
     double distance_sensor_timeout_s_{1.0};
+    double vehicle_local_position_timeout_s_{1.0};
     double state_feedback_timeout_s_{1.0};
     double search_yaw_offset_rad_{0.35};
     double search_lateral_offset_m_{0.4};
@@ -419,6 +421,7 @@ class UavOffboardFsm : public rclcpp::Node {
     std::optional<Waypoint> currentWaypoint();
     Waypoint currentOrHoverWaypoint();
     bool hasFreshDistanceSensor();
+    bool hasFreshVehicleLocalPosition();
     bool isFreshStateTime(const rclcpp::Time & stamp) const;
 
     void generateSearchAdjustWaypoints();
@@ -433,7 +436,7 @@ class UavOffboardFsm : public rclcpp::Node {
     void statusPublishOnTimer();
     void handleControlCommand(const std_msgs::msg::String::SharedPtr msg);
     void handleParsedCommand(CommandType command_type, const std::string & source);
-    void handleMainTaskStatus(const status_interfaces_pkg::msg::Status::SharedPtr msg);
+    void handleMainTaskStatus(const status_interfaces_pkg::msg::TaskFSM::SharedPtr msg);
     void handleMissionState(const std_msgs::msg::String::SharedPtr msg);
     void handleRuckigState(const sensor_msgs::msg::JointState::SharedPtr msg);
     void handleVehicleLocalPosition(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
@@ -619,9 +622,10 @@ void UavOffboardFsm::handleSelfCheck()
 
     if (!isSelfCheckOK()) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "SELF_CHECK | pending mission_enabled=%s distance_sensor_ok=%s",
+                             "SELF_CHECK | pending mission_enabled=%s distance_sensor_ok=%s vehicle_local_position_ok=%s",
                              mission_enabled_ ? "true" : "false",
-                             hasFreshDistanceSensor() ? "true" : "false");
+                             hasFreshDistanceSensor() ? "true" : "false",
+                             hasFreshVehicleLocalPosition() ? "true" : "false");
         return;
     }
 
@@ -1089,7 +1093,7 @@ void UavOffboardFsm::sendActiveTarget()
 // 自检条件判断：任务必须处于使能状态；如果参数要求测距传感器，则还必须有新鲜测距数据。
 bool UavOffboardFsm::isSelfCheckOK()
 {
-    return mission_enabled_ && (!require_distance_sensor_ || hasFreshDistanceSensor());
+    return mission_enabled_ && (!require_distance_sensor_ || hasFreshDistanceSensor()) && hasFreshVehicleLocalPosition();
 }
 
 // 起飞完成判断：读取当前无人机位置，并检查是否已经到达 takeoff_waypoint 参数指定的起飞航点。
@@ -1177,6 +1181,17 @@ bool UavOffboardFsm::hasFreshDistanceSensor()
         return false;
     }
     return (now() - last_distance_sensor_time_).seconds() <= distance_sensor_timeout_s_;
+}
+
+bool UavOffboardFsm::hasFreshVehicleLocalPosition()
+{
+    if (!latest_actual_state_.has_value()) {
+        return false;
+    }
+    if (last_actual_state_time_.nanoseconds() == 0) {
+        return false;
+    }
+    return (now() - last_actual_state_time_).seconds() <= vehicle_local_position_timeout_s_;
 }
 
 // 生成搜索微调航点：围绕当前位置先偏航，再左右横移，最后回到原始姿态。
@@ -1611,10 +1626,10 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
 }
 
 // 主状态机状态回调：订阅 status_interfaces_pkg/Status，将 main_task_state 索引映射为无人机流程指令。
-void UavOffboardFsm::handleMainTaskStatus(const status_interfaces_pkg::msg::Status::SharedPtr msg)
+void UavOffboardFsm::handleMainTaskStatus(const status_interfaces_pkg::msg::TaskFSM::SharedPtr msg)
 {
         const auto now_ns = now().nanoseconds();
-        const int status_value = static_cast<int>(msg->uav_control_state);
+        const int status_value = static_cast<int>(msg->main_task_state);
         const int previous = last_main_task_status_.load();
         const int64_t last_dispatch_ns = last_main_task_dispatch_ns_.load();
         const int64_t repeat_period_ns =
@@ -1625,15 +1640,15 @@ void UavOffboardFsm::handleMainTaskStatus(const status_interfaces_pkg::msg::Stat
         last_main_task_status_.store(status_value);
         last_main_task_dispatch_ns_.store(now_ns);
 
-        const auto parsed = commandFromMainTaskStatus(msg->uav_control_state);
+        const auto parsed = commandFromMainTaskStatus(msg->main_task_state);
         if (!parsed) {
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                                 "Main task state ignored | status=%u", msg->uav_control_state);
+                                 "Main task state ignored | status=%u", msg->main_task_state);
             return;
         }
 
         std::ostringstream source;
-        source << "main_task_state=" << static_cast<int>(msg->uav_control_state);
+        source << "main_task_state=" << static_cast<int>(msg->main_task_state);
         handleParsedCommand(parsed->type, source.str());
 }
 

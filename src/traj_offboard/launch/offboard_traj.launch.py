@@ -46,6 +46,7 @@ def generate_launch_description() -> LaunchDescription:
         '/fmu/in/trajectory_setpoint',
         '/fmu/in/offboard_control_mode',
         '/fmu/in/vehicle_command',
+        '/main_task_fsm/task_states',
     ]
 
     offboard_bridge = Node(

@@ -1,0 +1,21 @@
+uint8 main_task_state
+
+
+
+uint8 PRE_CHECK = 1
+uint8 WAIT_TASK_ENABLE_AUTH = 2
+uint8 NAV_TO_TASK_DOM  = 3
+uint8 ARRIVE_TASK_DOM    = 4  
+uint8 UAV_SEARCH_TARGS  = 6 
+uint8 TARG_GOT= 7 
+uint8 TARG_READY = 8 
+uint8 UAV_POSE_ADAP = 9 
+uint8 ARM_CONFIG_PREP = 10
+uint8 SAMPL_OPERA = 11 
+uint8 UAV_PRE_BACK_HOME=12
+uint8 BACK_HOME = 13
+uint8 ARRIVE_HOME = 14
+uint8 TEST = 15
+
+uint8 TASK_TERM = 30
+

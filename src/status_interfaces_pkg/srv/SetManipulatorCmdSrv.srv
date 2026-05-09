@@ -1,0 +1,12 @@
+# End effector translation command（ -1,1 ）
+int8 dx
+int8 dy
+int8 dz
+# End joint rotation command.  （-1,1）
+int8 joint_position
+# Manual control enabled
+# bool last_joint_enable
+
+---
+bool success
+string message
