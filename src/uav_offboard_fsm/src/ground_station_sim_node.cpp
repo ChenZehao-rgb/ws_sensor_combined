@@ -20,6 +20,7 @@ class GroundStationSim : public rclcpp::Node {
 
   private:
     // 请求式：自动选择 switchable_statuses 中的第一个候选，原样回传 current_status 供时效校验。
+    uint32_t count = 1;
     void handleSwitchStatus(
         const std::shared_ptr<status_interfaces_pkg::srv::SwitchStatus::Request> request,
         std::shared_ptr<status_interfaces_pkg::srv::SwitchStatus::Response> response)
@@ -32,6 +33,13 @@ class GroundStationSim : public rclcpp::Node {
                         request->current_status);
             return;
         }
+        // while(count < 5000000)
+        // {
+        //     count ++;
+        //     RCLCPP_WARN(get_logger(),
+        //                 "Waiting for repose, count=%d",
+        //                 count);
+        // }
         response->target_status = request->switchable_statuses[0];
         RCLCPP_INFO(get_logger(),
                     "SwitchStatus | current=%u -> target=%u (auto first)",

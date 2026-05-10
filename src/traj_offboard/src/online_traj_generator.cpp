@@ -48,6 +48,16 @@ private:
   bool isFirstTraj_{true};
   bool hasLastCommand_{false};
 
+#if TRAJ_OFFBOARD_HAVE_RUCKIG
+  void seedRuckigCurrentFromState() {
+    for (std::size_t id = 0; id < STATE_NUM; id++) {
+      ruckigInput_.current_position[id] = state_.position[id];
+      ruckigInput_.current_velocity[id] = state_.velocity[id];
+      ruckigInput_.current_acceleration[id] = state_.effort[id];
+    }
+  }
+#endif
+
   void updateTrajGeneratorState() {
     state_.position[0] = current_state_.position[0];
     state_.position[1] = current_state_.position[1];
@@ -62,6 +72,7 @@ private:
     state_.effort[0] = current_state_.acceleration[0];
     state_.effort[1] = current_state_.acceleration[1];
     state_.effort[2] = current_state_.acceleration[2];
+    state_.effort[3] = 0.0;
   }
 
   void updateTrajGeneratorTarg() {
@@ -78,6 +89,7 @@ private:
     targ_.effort[0] = traj_target_.acceleration[0];
     targ_.effort[1] = traj_target_.acceleration[1];
     targ_.effort[2] = traj_target_.acceleration[2];
+    targ_.effort[3] = 0.0;
   }
 
   void updateTrajectorySetpointResponse(px4_msgs::msg::TrajectorySetpoint &traj_setpoint) {
@@ -97,8 +109,9 @@ private:
   }
 
   void handleGetTrajSetpoints(const traj_offboard::srv::GetTrajectorySetpoint::Request::SharedPtr request,
-							 traj_offboard::srv::GetTrajectorySetpoint::Response::SharedPtr response) {
-    if (isFirstTraj_ || !hasLastCommand_) {
+								 traj_offboard::srv::GetTrajectorySetpoint::Response::SharedPtr response) {
+    const bool seed_current_from_request = isFirstTraj_ || !hasLastCommand_;
+    if (seed_current_from_request) {
       current_state_ = request->current_state;
       isFirstTraj_ = false;
       RCLCPP_INFO(get_logger(), "Trajectory generator active | first request received");
@@ -110,10 +123,8 @@ private:
     updateTrajGeneratorState();
 
 #if TRAJ_OFFBOARD_HAVE_RUCKIG
-    for (std::size_t id = 0; id < STATE_NUM; id++) {
-      ruckigInput_.current_position[id] = state_.position[id];
-      // ruckigInput_.current_velocity[id] = state_.velocity[id];
-      // ruckigInput_.current_acceleration[id] = state_.effort[id];
+    if (seed_current_from_request) {
+      seedRuckigCurrentFromState();
     }
 #endif
 

@@ -12,6 +12,7 @@
 #include <status_interfaces_pkg/srv/switch_status.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <traj_offboard/srv/set_target.hpp>
+#include <traj_offboard/msg/traj_complete_flag.hpp>
 
 #include <algorithm>
 #include <array>
@@ -185,7 +186,10 @@ class UavOffboardFsm : public rclcpp::Node {
         ruckig_state_sub_ = create_subscription<sensor_msgs::msg::JointState>(
             state_feedback_topic, state_feedback_queue_depth_,
             std::bind(&UavOffboardFsm::handleRuckigState, this, std::placeholders::_1));
-
+        
+        traj_complete_flag_sub_ = create_subscription<traj_offboard::msg::TrajCompleteFlag>(
+            "/traj_offboard/traj_complete_flag", subscriber_queue_depth_,
+            std::bind(&UavOffboardFsm::handleTrajCompleteFlag, this, std::placeholders::_1));
         auto sensor_qos = rclcpp::SensorDataQoS(); //best effort, duable volatile
         sensor_qos.keep_last(static_cast<std::size_t>(sensor_queue_depth_));
 
@@ -289,6 +293,8 @@ class UavOffboardFsm : public rclcpp::Node {
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;
     rclcpp::Subscription<px4_msgs::msg::HomePosition>::SharedPtr home_position_sub_;
     rclcpp::Subscription<px4_msgs::msg::DistanceSensor>::SharedPtr distance_sensor_sub_;
+
+    rclcpp::Subscription<traj_offboard::msg::TrajCompleteFlag>::SharedPtr traj_complete_flag_sub_;
     rclcpp::TimerBase::SharedPtr timer_;
 
     std::atomic<ControlState> control_state_{ControlState::SELF_CHECK};
@@ -308,6 +314,7 @@ class UavOffboardFsm : public rclcpp::Node {
     std::optional<double> latest_distance_m_;
     rclcpp::Time last_distance_sensor_time_{0, 0, RCL_ROS_TIME};
 
+    traj_offboard::msg::TrajCompleteFlag traj_complete_flag_;
     //状态机内部状态标志位和参数
     bool ready_for_takeoff_{false};
     bool self_check_requested_{false};
@@ -463,6 +470,7 @@ class UavOffboardFsm : public rclcpp::Node {
     static std::string upperCopy(std::string value);
     static double wrapAngle(double angle);
 
+    void handleTrajCompleteFlag(const traj_offboard::msg::TrajCompleteFlag::SharedPtr msg);
 };
 
 // 状态机主循环：定时检查当前状态，处理状态进入动作，发布状态信息，并调用对应状态处理函数。
@@ -651,7 +659,7 @@ void UavOffboardFsm::handleUavStart()
         return;
     }
 
-    if (!isUAVTakeoff()) {
+    if (traj_complete_flag_.take_off_completed) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), takeoff_wait_log_throttle_ms_,
                              "UAV_START | waiting for vehicle at target=(%.2f, %.2f, %.2f, yaw %.2f)",
                              takeoff_waypoint_.x, takeoff_waypoint_.y,
@@ -692,7 +700,7 @@ void UavOffboardFsm::handleTransitToArea()
         return;
     }
 
-    if (handleWaypointSequence(transit_waypoints_, transit_index_, "transit")) {
+    if (traj_complete_flag_.trajectory_completed) {
         is_arrived_task_aera_ = true;
         publishStatusExecution();
         RCLCPP_INFO(get_logger(), "TRANSIT_TO_AREA complete | uavArrivedTaskAera=1");
@@ -1921,6 +1929,11 @@ void UavOffboardFsm::handleDistanceSensor(const px4_msgs::msg::DistanceSensor::S
         latest_distance_m_ = msg->current_distance;
         last_distance_sensor_time_ = now();
     }
+}
+
+void UavOffboardFsm::handleTrajCompleteFlag(const traj_offboard::msg::TrajCompleteFlag::SharedPtr msg)
+{
+    traj_complete_flag_ = *msg;
 }
 
 // 单航点参数解析：要求参数正好包含 [x, y, z, yaw] 四个 double，格式错误时使用传入的 fallback。

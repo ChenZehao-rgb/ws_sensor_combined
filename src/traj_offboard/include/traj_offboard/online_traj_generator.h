@@ -5,6 +5,9 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <vector>
 #include <algorithm>
+#include <iomanip>
+#include <sstream>
+#include <string>
 
 #if __has_include(<ruckig/ruckig.hpp>)
 #  include <ruckig/ruckig.hpp>
@@ -30,6 +33,43 @@ const std::vector<double> ACC_LIMIT = {3.0, 3.0, 2.0, YAW_ACC_LIMIT};
 const std::vector<double> JERK_LIMIT = {2.0, 2.0, 2.0, YAW_JERK_LIMIT};
 
 class TrajGenerator {
+#if TRAJ_OFFBOARD_HAVE_RUCKIG
+  template <class VectorT>
+  static std::string formatVector(const VectorT &values) {
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(4) << "[";
+    for (std::size_t id = 0; id < STATE_NUM; id++) {
+      if (id > 0) {
+        stream << ", ";
+      }
+      stream << values[id];
+    }
+    stream << "]";
+    return stream.str();
+  }
+
+  static const char *resultName(ruckig::Result res) {
+    switch (res) {
+      case ruckig::Result::Error:
+        return "Error";
+      case ruckig::Result::ErrorInvalidInput:
+        return "ErrorInvalidInput";
+      case ruckig::Result::ErrorTrajectoryDuration:
+        return "ErrorTrajectoryDuration";
+      case ruckig::Result::ErrorPositionalLimits:
+        return "ErrorPositionalLimits";
+      case ruckig::Result::ErrorZeroLimits:
+        return "ErrorZeroLimits";
+      case ruckig::Result::ErrorExecutionTimeCalculation:
+        return "ErrorExecutionTimeCalculation";
+      case ruckig::Result::ErrorSynchronizationCalculation:
+        return "ErrorSynchronizationCalculation";
+      default:
+        return "Unknown";
+    }
+  }
+#endif
+
 public:
   TrajGenerator() {
     state_.name = {"pos_x", "pos_y", "pos_z", "yaw"};
@@ -92,25 +132,15 @@ public:
       return true;
     } else {
       auto logger = rclcpp::get_logger("traj_offboard");
-      switch (res) {
-        case ruckig::Result::Error:
-          RCLCPP_ERROR(logger, "TrajGenerator::trajGenerate: ruckig res is 'Error'");
-          break;
-        case ruckig::Result::ErrorInvalidInput:
-          RCLCPP_ERROR(logger, "TrajGenerator::trajGenerate: ruckig res is 'ErrorInvalidInput'");
-          break;
-        case ruckig::Result::ErrorTrajectoryDuration:
-          RCLCPP_ERROR(logger, "TrajGenerator::trajGenerate: ruckig res is 'ErrorTrajectoryDuration'");
-          break;
-        case ruckig::Result::ErrorExecutionTimeCalculation:
-          RCLCPP_ERROR(logger, "TrajGenerator::trajGenerate: ruckig res is 'ErrorExecutionTimeCalculation'");
-          break;
-        case ruckig::Result::ErrorSynchronizationCalculation:
-          RCLCPP_ERROR(logger, "TrajGenerator::trajGenerate: ruckig res is 'ErrorSynchronizationCalculation'");
-          break;
-        default:
-          break;
-      }
+      RCLCPP_ERROR(logger,
+                   "TrajGenerator::trajGenerate: ruckig res is '%s' | current_p=%s current_v=%s current_a=%s target_p=%s target_v=%s target_a=%s",
+                   resultName(res),
+                   formatVector(ruckigInput_.current_position).c_str(),
+                   formatVector(ruckigInput_.current_velocity).c_str(),
+                   formatVector(ruckigInput_.current_acceleration).c_str(),
+                   formatVector(ruckigInput_.target_position).c_str(),
+                   formatVector(ruckigInput_.target_velocity).c_str(),
+                   formatVector(ruckigInput_.target_acceleration).c_str());
       return false;
     }
 #else

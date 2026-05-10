@@ -37,6 +37,7 @@ endif()
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetTarget.srv"
   "srv/GetTrajectorySetpoint.srv"
+  "msg/TrajCompleteFlag.msg"
   DEPENDENCIES
     geometry_msgs
     px4_msgs

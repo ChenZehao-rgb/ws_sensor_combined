@@ -1,0 +1,2 @@
+bool take_off_completed
+bool trajectory_completed
