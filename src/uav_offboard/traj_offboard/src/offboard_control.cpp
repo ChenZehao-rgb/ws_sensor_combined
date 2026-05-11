@@ -128,7 +128,7 @@ class OffboardControlBridge : public rclcpp::Node {
     uint64_t forwarded_target_generation_{0};
     std::mutex bridge_mutex_;
 
-    std::string waypoints_csv_path_{"/home/sia/zmxROS2/waypoints.csv"};
+    std::string waypoints_csv_path_{"/home/sia/ws_sensor_combined/src/uav_offboard/zmxROS2/waypoints.csv"};
     double csv_stream_rate_hz_{50.0};
     double csv_default_yaw_{0.0};
     std::vector<CsvWaypoint> csv_waypoints_;
