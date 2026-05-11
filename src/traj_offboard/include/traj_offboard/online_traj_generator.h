@@ -58,8 +58,6 @@ class TrajGenerator {
         return "ErrorTrajectoryDuration";
       case ruckig::Result::ErrorPositionalLimits:
         return "ErrorPositionalLimits";
-      case ruckig::Result::ErrorZeroLimits:
-        return "ErrorZeroLimits";
       case ruckig::Result::ErrorExecutionTimeCalculation:
         return "ErrorExecutionTimeCalculation";
       case ruckig::Result::ErrorSynchronizationCalculation:

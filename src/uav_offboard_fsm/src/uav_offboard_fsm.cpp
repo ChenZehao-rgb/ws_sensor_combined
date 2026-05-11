@@ -7,7 +7,6 @@
 #include <std_msgs/msg/string.hpp>
 #include <status_interfaces_pkg/msg/task_fsm.hpp>
 #include <status_interfaces_pkg/msg/status.hpp>
-#include <status_interfaces_pkg/msg/status_execution.hpp>
 #include <status_interfaces_pkg/srv/actuator_control.hpp>
 #include <status_interfaces_pkg/srv/switch_status.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
@@ -96,8 +95,6 @@ class UavOffboardFsm : public rclcpp::Node {
             declare_parameter<std::string>("status_topic", "/uav_offboard_fsm/status");
         const auto status_text_topic =
             declare_parameter<std::string>("status_text_topic", "/uav_offboard_fsm/status_text");
-        const auto status_execution_topic =
-            declare_parameter<std::string>("status_execution_topic", "/uav_offboard_fsm/status_execution");
         const auto set_target_service =
             declare_parameter<std::string>("set_target_service", "online_traj_generator/set_target");
         const auto control_command_topic =
@@ -151,10 +148,6 @@ class UavOffboardFsm : public rclcpp::Node {
         // 保留一条可读诊断话题，便于终端和 rosbag 排查内部标志。
         status_text_pub_ =
             create_publisher<std_msgs::msg::String>(status_text_topic, publisher_queue_depth_);
-        // 状态执行完成时发布一次结果事件，供其他状态机判断该阶段是否完成。
-        status_execution_pub_ =
-            create_publisher<status_interfaces_pkg::msg::StatusExecution>(
-                status_execution_topic, publisher_queue_depth_);
         vehicle_command_publisher_ =
             create_publisher<px4_msgs::msg::VehicleCommand>(vehicle_command_topic, publisher_queue_depth_);
 
@@ -204,7 +197,10 @@ class UavOffboardFsm : public rclcpp::Node {
         distance_sensor_sub_ = create_subscription<px4_msgs::msg::DistanceSensor>(
             distance_sensor_topic, sensor_qos,
             std::bind(&UavOffboardFsm::handleDistanceSensor, this, std::placeholders::_1));
-
+        
+        // actuator_outputs_sub_ = create_subscription<px4_msgs::msg::ActuatorOutputs>(
+        //     "/fmu/out/actuator_outputs", sensor_qos,
+        //     std::bind(&UavOffboardFsm::handleActuatorOutputs, this, std::placeholders::_1));
         timer_ = create_wall_timer(std::chrono::milliseconds(control_loop_period_ms_),
                                    std::bind(&UavOffboardFsm::controlLoopOnTimer, this));
 
@@ -280,7 +276,6 @@ class UavOffboardFsm : public rclcpp::Node {
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr offboard_state_pub_;
     rclcpp::Publisher<status_interfaces_pkg::msg::Status>::SharedPtr status_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_text_pub_;
-    rclcpp::Publisher<status_interfaces_pkg::msg::StatusExecution>::SharedPtr status_execution_pub_;
     rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr vehicle_command_publisher_;
     rclcpp::Service<status_interfaces_pkg::srv::ActuatorControl>::SharedPtr actuator_control_srv_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr control_command_sub_;
@@ -293,6 +288,7 @@ class UavOffboardFsm : public rclcpp::Node {
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;
     rclcpp::Subscription<px4_msgs::msg::HomePosition>::SharedPtr home_position_sub_;
     rclcpp::Subscription<px4_msgs::msg::DistanceSensor>::SharedPtr distance_sensor_sub_;
+    // rclcpp::Subscription<px4_msgs::msg::ActuatorOutputs>::SharedPtr actuator_outputs_sub_;
 
     rclcpp::Subscription<traj_offboard::msg::TrajCompleteFlag>::SharedPtr traj_complete_flag_sub_;
     rclcpp::TimerBase::SharedPtr timer_;
@@ -439,7 +435,6 @@ class UavOffboardFsm : public rclcpp::Node {
 
     void publishOffboardState(ControlState state);
     void publishStatus(ControlState state);
-    void publishStatusExecution();
     void statusPublishOnTimer();
     void handleControlCommand(const std_msgs::msg::String::SharedPtr msg);
     void handleParsedCommand(CommandType command_type, const std::string & source);
@@ -449,6 +444,7 @@ class UavOffboardFsm : public rclcpp::Node {
     void handleVehicleLocalPosition(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
     void handleHomePosition(const px4_msgs::msg::HomePosition::SharedPtr msg);
     void handleDistanceSensor(const px4_msgs::msg::DistanceSensor::SharedPtr msg);
+    // void handleActuatorOutputs(const px4_msgs::msg::ActuatorOutputs::SharedPtr msg);
     void requestSwitchChoice(ControlState current_state, const std::vector<ControlState> & candidates,
                              const std::string & reason);
     void applyApprovedTransition(ControlState current_state, ControlState target_state,
@@ -639,7 +635,6 @@ void UavOffboardFsm::handleSelfCheck()
 
     ready_for_takeoff_ = true;
     self_check_requested_ = false;
-    publishStatusExecution();
     RCLCPP_INFO(get_logger(), "SELF_CHECK complete | uavCheckSucceed=1 waiting WAIT_TASK_ENABLE_AUTH");
 }
 
@@ -668,7 +663,6 @@ void UavOffboardFsm::handleUavStart()
     }
 
     ready_for_transit_ = true;
-    publishStatusExecution();
     RCLCPP_INFO(get_logger(), "UAV_START complete | uavTakeoffSucceed=1 waiting NAV_TO_TASK_DOM");
 }
 
@@ -702,7 +696,6 @@ void UavOffboardFsm::handleTransitToArea()
 
     if (traj_complete_flag_.trajectory_completed) {
         is_arrived_task_aera_ = true;
-        publishStatusExecution();
         RCLCPP_INFO(get_logger(), "TRANSIT_TO_AREA complete | uavArrivedTaskAera=1");
         transitionTo(ControlState::UAV_ARRIVED_AERA);
     }
@@ -775,7 +768,6 @@ void UavOffboardFsm::handleApproachPlant()
         *latest_distance_m_ <= approach_target_distance_m_ + approach_distance_tolerance_m_) {
         approach_completed_ = true;
         clearActiveTarget();
-        publishStatusExecution();
         RCLCPP_INFO(get_logger(), "APPROACH_PLANT complete | uavApproachSucceed=1 TARG_READY source=distance_sensor");
         transitionTo(ControlState::UAV_PRE_HOLD);
         return;
@@ -783,7 +775,6 @@ void UavOffboardFsm::handleApproachPlant()
 
     if (handleWaypointSequence(approach_waypoints_, approach_index_, "approach")) {
         approach_completed_ = true;
-        publishStatusExecution();
         RCLCPP_INFO(get_logger(), "APPROACH_PLANT complete | uavApproachSucceed=1 TARG_READY source=target_arrival");
         transitionTo(ControlState::UAV_PRE_HOLD);
     }
@@ -821,7 +812,6 @@ void UavOffboardFsm::handleSampleAdjustAuto()
 
     if (handleWaypointSequence(sample_adjust_waypoints_, sample_adjust_index_, "sample adjust auto")) {
         uav_adjust_succeed_ = true;
-        publishStatusExecution();
         RCLCPP_INFO(get_logger(), "SAMP_ADJUST_AUTO complete | uavAdjustSucceed=1 waiting ARM_CONFIG_PREP");
         transitionTo(ControlState::UAV_HOLD);
     }
@@ -899,13 +889,13 @@ void UavOffboardFsm::handleActuatorControl(
     const std::shared_ptr<status_interfaces_pkg::srv::ActuatorControl::Request> request,
     std::shared_ptr<status_interfaces_pkg::srv::ActuatorControl::Response> response)
 {
-    if (control_state_.load() != ControlState::UAV_HOLD) {
-        RCLCPP_WARN(get_logger(),
-                    "ActuatorControl rejected | not in UAV_HOLD (current=%d)",
-                    static_cast<int>(control_state_.load()));
-        response->success = false;
-        return;
-    }
+    // if (control_state_.load() != ControlState::UAV_HOLD) {
+    //     RCLCPP_WARN(get_logger(),
+    //                 "ActuatorControl rejected | not in UAV_HOLD (current=%d)",
+    //                 static_cast<int>(control_state_.load()));
+    //     response->success = false;
+    //     return;
+    // }
     
     if (vehicle_command_publisher_->get_subscription_count() == 0) {
         RCLCPP_WARN(get_logger(), "ActuatorControl rejected | no FMU subscriber");
@@ -915,12 +905,12 @@ void UavOffboardFsm::handleActuatorControl(
 
     publish_vehicle_command(
         px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_ACTUATOR,
-        static_cast<float>(request->clab),
-        static_cast<float>(request->cut));
+        static_cast<float>(request->close) ? 1.0f : -1.0f,
+        static_cast<float>(request->cut) ? 1.0f : -1.0f);
     response->success = true;
     RCLCPP_INFO(get_logger(),
-                "ActuatorControl | clab=%d cut=%d -> FMU sent",
-                static_cast<int>(request->clab), static_cast<int>(request->cut));
+                "ActuatorControl | close=%d cut=%d -> FMU sent",
+                static_cast<int>(request->close), static_cast<int>(request->cut));
 }
 
 // 后退处理：返航前沿机体系后方退回安全距离，完成后允许执行 BACK_HOME。
@@ -936,7 +926,6 @@ void UavOffboardFsm::handleRetreat()
     if (handleWaypointSequence(retreat_waypoints_, retreat_index_, "retreat")) {
         if (!uav_ready_for_back_) {
             uav_ready_for_back_ = true;
-            publishStatusExecution();
             RCLCPP_INFO(get_logger(), "RETREAT complete | uavReadyForBack=1 waiting BACK_HOME");
         }
     }
@@ -955,7 +944,6 @@ void UavOffboardFsm::handleBackHome()
     if (handleWaypointSequence(back_home_waypoints_, back_home_index_, "back home")) {
         if (!back_home_) {
             back_home_ = true;
-            publishStatusExecution();
             RCLCPP_INFO(get_logger(), "UAV_BACK_HOME complete | back_home=true");
         }
     }
@@ -1315,26 +1303,11 @@ void UavOffboardFsm::publishStatus(ControlState state)
         status_text_pub_->publish(text_msg);
 }
 
-// 发布任务进度标志位：将7个阶段完成布尔量一并发出，供主状态机实时读取。
-void UavOffboardFsm::publishStatusExecution()
-{
-        status_interfaces_pkg::msg::StatusExecution msg;
-        msg.uav_check_succeed     = ready_for_takeoff_;
-        msg.uav_takeoff_succeed   = ready_for_transit_;
-        msg.uav_arrived_task_aera = is_arrived_task_aera_;
-        msg.uav_search_succeed    = uav_search_succeed_;
-        msg.uav_approach_succeed  = approach_completed_;
-        msg.uav_adjust_succeed    = uav_adjust_succeed_;
-        msg.uav_ready_for_back    = uav_ready_for_back_;
-        status_execution_pub_->publish(msg);
-}
-
-// 1Hz 状态发布定时器：周期性向外发布 Status 和 StatusExecution，满足规范的 1Hz 发布要求。
+// 状态发布定时器：周期性向外发布 Status 和可读诊断文本。
 void UavOffboardFsm::statusPublishOnTimer()
 {
     std::lock_guard<std::mutex> lock(fsm_mutex_);
     publishStatus(control_state_.load());
-    publishStatusExecution();
 }
 
 // 控制指令回调：键盘临时控制仍使用字符串，解析后交给统一的流程指令处理函数。
@@ -1377,7 +1350,6 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
                 uav_adjust_succeed_ = true;
                 arm_config_prepared_ = false;
                 sampl_opera_completed_ = false;
-                publishStatusExecution();
                 transitionTo(ControlState::UAV_HOLD);
                 RCLCPP_INFO(get_logger(), "Command accepted | SAMP_ADJUST_MANUAL CONFIRM uavAdjustSucceed=1");
                 return;
@@ -1782,10 +1754,8 @@ void UavOffboardFsm::applyApprovedTransition(ControlState current_state,
         if (target_state == ControlState::APPROACH_PLANT) {
             adjust_completed_ = true;
             uav_search_succeed_ = true;
-            publishStatusExecution();
         } else if (target_state == ControlState::UAV_HOLD) {
             uav_adjust_succeed_ = true;
-            publishStatusExecution();
         }
 
         transitionTo(target_state);
@@ -1931,6 +1901,10 @@ void UavOffboardFsm::handleDistanceSensor(const px4_msgs::msg::DistanceSensor::S
     }
 }
 
+// void UavOffboardFsm::handleActuatorOutputs(const px4_msgs::msg::ActuatorOutputs::SharedPtr msg)
+// {
+    
+// }
 void UavOffboardFsm::handleTrajCompleteFlag(const traj_offboard::msg::TrajCompleteFlag::SharedPtr msg)
 {
     traj_complete_flag_ = *msg;

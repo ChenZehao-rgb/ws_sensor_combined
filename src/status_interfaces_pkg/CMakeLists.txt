@@ -11,7 +11,6 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Status.msg"
-  "msg/StatusExecution.msg"
   "msg/ManipulatorFSM.msg"
   "msg/SetManipulatorCmd.msg"
   "msg/TaskFSM.msg"

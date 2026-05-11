@@ -114,9 +114,6 @@ uav_offboard_fsm:
     # 状态机可读诊断信息话题，类型 std_msgs/msg/String。
     status_text_topic: "/uav_offboard_fsm/status_text"
 
-    # 状态执行完成事件话题，类型 status_interfaces_pkg/msg/StatusExecution。
-    status_execution_topic: "/uav_offboard_fsm/status_execution"
-
     # traj_offboard 的目标设置服务名。
     set_target_service: "online_traj_generator/set_target"
 
