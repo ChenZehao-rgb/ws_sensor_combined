@@ -27,16 +27,6 @@
 #include <string>
 #include <vector>
 
-namespace {
-
-// 正整数参数归一化：ROS2 整数参数在 Humble 中通常是 long，这里统一限制为 >=1 的 int。
-int positiveInt(long value)
-{
-    return static_cast<int>(std::max(1L, value));
-}
-
-}  // namespace
-
 class UavOffboardFsm : public rclcpp::Node {
   public:
     // 构造函数：声明并读取所有 ROS2 参数，随后按参数配置创建发布器、订阅器、服务客户端和状态机定时器。
@@ -48,76 +38,6 @@ class UavOffboardFsm : public rclcpp::Node {
         home_waypoint_ =
             parseSingleWaypointParameter(declare_parameter<std::vector<double>>("home_waypoint", default_takeoff),
                                          takeoff_waypoint_);
-        position_tolerance_ = declare_parameter<double>("position_tolerance", 0.25);
-        yaw_tolerance_ = declare_parameter<double>("yaw_tolerance", 0.15);
-        mission_enabled_ = declare_parameter<bool>("mission_enabled", true);
-        require_distance_sensor_ = declare_parameter<bool>("require_distance_sensor", false);
-        distance_sensor_timeout_s_ = declare_parameter<double>("distance_sensor_timeout_s", 1.0);
-        state_feedback_timeout_s_ = declare_parameter<double>("state_feedback_timeout_s", 1.0);
-        search_yaw_offset_rad_ = declare_parameter<double>("search_yaw_offset_rad", 0.35);
-        search_lateral_offset_m_ = declare_parameter<double>("search_lateral_offset_m", 0.4);
-        approach_distance_m_ = declare_parameter<double>("approach_distance_m", 1.0);
-        approach_target_distance_m_ = declare_parameter<double>("approach_target_distance_m", 0.7);
-        approach_distance_tolerance_m_ = declare_parameter<double>("approach_distance_tolerance_m", 0.1);
-        retreat_distance_m_ = declare_parameter<double>("retreat_distance_m", 1.0);
-        sample_adjust_forward_m_ = declare_parameter<double>("sample_adjust_forward_m", 0.2);
-        sample_adjust_right_m_ = declare_parameter<double>("sample_adjust_right_m", 0.0);
-        sample_adjust_z_offset_m_ = declare_parameter<double>("sample_adjust_z_offset_m", 0.0);
-        sample_adjust_yaw_offset_rad_ = declare_parameter<double>("sample_adjust_yaw_offset_rad", 0.0);
-        target_velocity_ =
-            parseVector3Parameter(declare_parameter<std::vector<double>>("target_velocity", {0.0, 0.0, 0.0}),
-                                  {0.0, 0.0, 0.0});
-        target_acceleration_ =
-            parseVector3Parameter(declare_parameter<std::vector<double>>("target_acceleration", {0.0, 0.0, 0.0}),
-                                  {0.0, 0.0, 0.0});
-        target_yawspeed_ = declare_parameter<double>("target_yawspeed", 0.0);
-        heading_yaw_offset_rad_ = declare_parameter<double>("heading_yaw_offset_rad", 1.5707963267948966);
-        distance_sensor_min_signal_quality_ = declare_parameter<int>("distance_sensor_min_signal_quality", 1);
-        control_loop_period_ms_ = positiveInt(declare_parameter<int>("control_loop_period_ms", 50));
-        executor_threads_ = positiveInt(declare_parameter<int>("executor_threads", 2));
-        publisher_queue_depth_ = positiveInt(declare_parameter<int>("publisher_queue_depth", 10));
-        subscriber_queue_depth_ = positiveInt(declare_parameter<int>("subscriber_queue_depth", 10));
-        state_feedback_queue_depth_ = positiveInt(declare_parameter<int>("state_feedback_queue_depth", 10));
-        sensor_queue_depth_ = positiveInt(declare_parameter<int>("sensor_queue_depth", 10));
-        log_throttle_ms_ = positiveInt(declare_parameter<int>("log_throttle_ms", 2000));
-        takeoff_wait_log_throttle_ms_ = positiveInt(
-            declare_parameter<int>("takeoff_wait_log_throttle_ms", 1000));
-        hovering_log_throttle_ms_ = positiveInt(declare_parameter<int>("hovering_log_throttle_ms", 3000));
-        main_task_repeat_dispatch_period_ms_ = positiveInt(
-            declare_parameter<int>("main_task_repeat_dispatch_period_ms", 500));
-        switch_status_urgency_ = positiveInt(declare_parameter<int>("switch_status_urgency", 5));
-        require_external_switch_service_ =
-            declare_parameter<bool>("require_external_switch_service", false);
-
-        const auto offboard_state_topic =
-            declare_parameter<std::string>("offboard_state_topic", "/uav_offboard_fsm/offboard_state");
-        const auto status_topic =
-            declare_parameter<std::string>("status_topic", "/uav_offboard_fsm/status");
-        const auto status_text_topic =
-            declare_parameter<std::string>("status_text_topic", "/uav_offboard_fsm/status_text");
-        const auto set_target_service =
-            declare_parameter<std::string>("set_target_service", "online_traj_generator/set_target");
-        const auto control_command_topic =
-            declare_parameter<std::string>("control_command_topic", "/uav_offboard_fsm/control_command");
-        const auto main_task_status_topic =
-            declare_parameter<std::string>("main_task_status_topic", "/main_task_fsm/task_states");
-        const auto mission_state_topic =
-            declare_parameter<std::string>("mission_state_topic", "/uav_offboard_fsm/mission_state");
-        const auto switch_status_service =
-            declare_parameter<std::string>("switch_status_service", "/ground_station/switch_status");
-        const auto state_feedback_topic =
-            declare_parameter<std::string>("state_feedback_topic", "/online_traj_generator/ruckig_state");
-        const auto distance_sensor_topic =
-            declare_parameter<std::string>("distance_sensor_topic", "/fmu/out/distance_sensor");
-        const auto vehicle_local_position_topic =
-            declare_parameter<std::string>("vehicle_local_position_topic", "/fmu/out/vehicle_local_position");
-        const auto home_position_topic =
-            declare_parameter<std::string>("home_position_topic", "/fmu/out/home_position");
-        const auto vehicle_command_topic =
-            declare_parameter<std::string>("vehicle_command_topic", "/fmu/in/vehicle_command");
-        const auto actuator_control_service =
-            declare_parameter<std::string>("actuator_control_service",
-                                           "/uav_offboard_fsm/actuator_control");
 
         const std::vector<double> default_transit = {
             0.0, 0.0, takeoff_waypoint_.z, 0.0,
@@ -141,23 +61,23 @@ class UavOffboardFsm : public rclcpp::Node {
         
         // 发给底层offboard状态定义
         offboard_state_pub_ =
-            create_publisher<std_msgs::msg::String>(offboard_state_topic, publisher_queue_depth_);
+            create_publisher<std_msgs::msg::String>("/uav_offboard_fsm/offboard_state", publisher_queue_depth_);
         // 对外发布当前状态索引，消息定义在 status_interfaces_pkg/msg/Status.msg 中。
         status_pub_ =
-            create_publisher<status_interfaces_pkg::msg::Status>(status_topic, publisher_queue_depth_);
+            create_publisher<status_interfaces_pkg::msg::Status>("/uav_offboard_fsm/status", publisher_queue_depth_);
         // 保留一条可读诊断话题，便于终端和 rosbag 排查内部标志。
         status_text_pub_ =
-            create_publisher<std_msgs::msg::String>(status_text_topic, publisher_queue_depth_);
+            create_publisher<std_msgs::msg::String>("/uav_offboard_fsm/status_text", publisher_queue_depth_);
         vehicle_command_publisher_ =
-            create_publisher<px4_msgs::msg::VehicleCommand>(vehicle_command_topic, publisher_queue_depth_);
+            create_publisher<px4_msgs::msg::VehicleCommand>("/fmu/in/vehicle_command", publisher_queue_depth_);
 
         //请求轨迹生成服务的客户端，发送目标点给在线轨迹生成器，后者调用ruckig库计算轨迹并发布状态反馈
         set_target_client_ =
-            create_client<traj_offboard::srv::SetTarget>(set_target_service);
+            create_client<traj_offboard::srv::SetTarget>("online_traj_generator/set_target");
         switch_status_client_ =
-            create_client<status_interfaces_pkg::srv::SwitchStatus>(switch_status_service);
+            create_client<status_interfaces_pkg::srv::SwitchStatus>("/ground_station/switch_status");
         actuator_control_srv_ = create_service<status_interfaces_pkg::srv::ActuatorControl>(
-            actuator_control_service,
+            "/uav_offboard_fsm/actuator_control",
             std::bind(&UavOffboardFsm::handleActuatorControl, this,
                       std::placeholders::_1, std::placeholders::_2));
 
@@ -165,19 +85,19 @@ class UavOffboardFsm : public rclcpp::Node {
                                           std::bind(&UavOffboardFsm::statusPublishOnTimer, this));
 
         control_command_sub_ = create_subscription<std_msgs::msg::String>(
-            control_command_topic, subscriber_queue_depth_,
+            "/uav_offboard_fsm/control_command", subscriber_queue_depth_,
             std::bind(&UavOffboardFsm::handleControlCommand, this, std::placeholders::_1));
 
         main_task_status_sub_ = create_subscription<status_interfaces_pkg::msg::TaskFSM>(
-            main_task_status_topic, subscriber_queue_depth_,
+            "/main_task_fsm/task_states", subscriber_queue_depth_,
             std::bind(&UavOffboardFsm::handleMainTaskStatus, this, std::placeholders::_1));
 
         mission_state_sub_ = create_subscription<std_msgs::msg::String>(
-            mission_state_topic, subscriber_queue_depth_,
+            "/uav_offboard_fsm/mission_state", subscriber_queue_depth_,
             std::bind(&UavOffboardFsm::handleMissionState, this, std::placeholders::_1));
 
         ruckig_state_sub_ = create_subscription<sensor_msgs::msg::JointState>(
-            state_feedback_topic, state_feedback_queue_depth_,
+            "/online_traj_generator/ruckig_state", state_feedback_queue_depth_,
             std::bind(&UavOffboardFsm::handleRuckigState, this, std::placeholders::_1));
         
         traj_complete_flag_sub_ = create_subscription<traj_offboard::msg::TrajCompleteFlag>(
@@ -187,15 +107,15 @@ class UavOffboardFsm : public rclcpp::Node {
         sensor_qos.keep_last(static_cast<std::size_t>(sensor_queue_depth_));
 
         vehicle_local_position_sub_ = create_subscription<px4_msgs::msg::VehicleLocalPosition>(
-            vehicle_local_position_topic, sensor_qos,
+            "/fmu/out/vehicle_local_position", sensor_qos,
             std::bind(&UavOffboardFsm::handleVehicleLocalPosition, this, std::placeholders::_1));
 
         home_position_sub_ = create_subscription<px4_msgs::msg::HomePosition>(
-            home_position_topic, sensor_qos,
+            "/fmu/out/home_position", sensor_qos,
             std::bind(&UavOffboardFsm::handleHomePosition, this, std::placeholders::_1));
 
         distance_sensor_sub_ = create_subscription<px4_msgs::msg::DistanceSensor>(
-            distance_sensor_topic, sensor_qos,
+            "/fmu/out/distance_sensor", sensor_qos,
             std::bind(&UavOffboardFsm::handleDistanceSensor, this, std::placeholders::_1));
         
         // actuator_outputs_sub_ = create_subscription<px4_msgs::msg::ActuatorOutputs>(
@@ -204,14 +124,6 @@ class UavOffboardFsm : public rclcpp::Node {
         timer_ = create_wall_timer(std::chrono::milliseconds(control_loop_period_ms_),
                                    std::bind(&UavOffboardFsm::controlLoopOnTimer, this));
 
-        RCLCPP_INFO(get_logger(),
-                    "FSM ready | command_topic=%s main_task_status_topic=%s offboard_state_topic=%s status_topic=%s set_target_service=%s",
-                    control_command_topic.c_str(), main_task_status_topic.c_str(),
-                    offboard_state_topic.c_str(), status_topic.c_str(),
-                    set_target_service.c_str());
-        RCLCPP_INFO(get_logger(),
-                    "FSM services | switch_client=%s",
-                    switch_status_service.c_str());
         RCLCPP_INFO(get_logger(),
                     "FSM mission defaults | takeoff=(%.2f, %.2f, %.2f, yaw %.2f) mission_enabled=%s require_distance_sensor=%s",
                     takeoff_waypoint_.x, takeoff_waypoint_.y, takeoff_waypoint_.z,

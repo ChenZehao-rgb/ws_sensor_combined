@@ -10,9 +10,7 @@
 class KeyboardControlNode : public rclcpp::Node {
   public:
     KeyboardControlNode() : rclcpp::Node("uav_keyboard_control") {
-        const auto control_command_topic =
-            declare_parameter<std::string>("control_command_topic", "/uav_offboard_fsm/control_command");
-        command_pub_ = this->create_publisher<std_msgs::msg::String>(control_command_topic, 10);
+        command_pub_ = this->create_publisher<std_msgs::msg::String>("/uav_offboard_fsm/control_command", 10);
         startKeyboardListener();
     }
 

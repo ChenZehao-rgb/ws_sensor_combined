@@ -175,7 +175,8 @@ class OffboardControlBridge : public rclcpp::Node {
 	void VehicleImuCallback(const px4_msgs::msg::VehicleImu::SharedPtr msg);
     void VehicleHomePositionCallback(const px4_msgs::msg::HomePosition::SharedPtr msg);
     void OffboardStateCallback(const std_msgs::msg::String::SharedPtr msg);
-	void publish_offboard_control_mode();
+	void publish_offboard_control_mode_pva();
+    void publish_offboard_control_mode_pv();
 	void publish_vehicle_command(uint16_t command, float param1 = 0.0f, float param2 = 0.0f);
     void handle_set_target(const traj_offboard::srv::SetTarget::Request::SharedPtr request,
                            traj_offboard::srv::SetTarget::Response::SharedPtr response);
@@ -239,11 +240,22 @@ void OffboardControlBridge::OffboardStateCallback(const std_msgs::msg::String::S
                     csv_waypoints_.size(), csv_stream_rate_hz_);
     }
 }
-void OffboardControlBridge::publish_offboard_control_mode() {
+void OffboardControlBridge::publish_offboard_control_mode_pva() {
     px4_msgs::msg::OffboardControlMode msg{};
     msg.position = true;
     msg.velocity = true;
     msg.acceleration = true;
+    msg.attitude = false;
+    msg.body_rate = false;
+    msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+    offboard_ctrl_mode_pub_->publish(msg);
+}
+
+void OffboardControlBridge::publish_offboard_control_mode_pv() {
+    px4_msgs::msg::OffboardControlMode msg{};
+    msg.position = true;
+    msg.velocity = true;
+    msg.acceleration = false;
     msg.attitude = false;
     msg.body_rate = false;
     msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
@@ -516,9 +528,9 @@ void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySe
     });
 }
 void OffboardControlBridge::controlLoopOnTimer() {
-    publish_offboard_control_mode();
     switch (flight_state_) {
         case FlightState::WAITINGFORCOMMAND: {
+            publish_offboard_control_mode_pva();
             if(offboard_state_.data == "UAV_START") {
                 flight_state_ = FlightState::TAKEOFF;
                 RCLCPP_INFO(get_logger(), "Bridge state -> TAKEOFF | trigger=%s arming and publishing takeoff setpoints",
@@ -530,6 +542,7 @@ void OffboardControlBridge::controlLoopOnTimer() {
             break;
         }
         case FlightState::TAKEOFF: {
+            publish_offboard_control_mode_pva();
             if (offboard_setpoint_counter_ == 10) {
                 // Switch to offboard mode and arm after sending initial setpoints
                 publish_vehicle_command(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
@@ -562,10 +575,12 @@ void OffboardControlBridge::controlLoopOnTimer() {
         case FlightState::TRAJECTORY_FOLLOWING: {
             std::lock_guard<std::mutex> lock(bridge_mutex_);
             if (offboard_state_.data == "TRANSIT_TO_AREA" && !csv_waypoints_.empty() && !csv_transit_complete_logged_) {
+                publish_offboard_control_mode_pv();
                 publish_csv_transit_setpoint();
                 break;
             }
             if(!has_target_) {
+                publish_offboard_control_mode_pva();
                 if (last_cmd_time_.nanoseconds() != 0) {
                     RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
                                          "Trajectory following | holding setpoint");
@@ -578,6 +593,7 @@ void OffboardControlBridge::controlLoopOnTimer() {
                 }
                 break;
             }
+            publish_offboard_control_mode_pva();
             publish_trajectory_setpoint();
             break;
         }
