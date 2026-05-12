@@ -467,6 +467,10 @@ void OffboardControlBridge::publish_csv_transit_setpoint() {
     if (!csv_transit_complete_logged_) {
         csv_transit_complete_logged_ = true;
         traj_complete_flag_.trajectory_completed = true;
+        traj_complete_flag_.traj_last_setpoint.position[0] = last_cmd_.position[0];
+        traj_complete_flag_.traj_last_setpoint.position[1] = last_cmd_.position[1];
+        traj_complete_flag_.traj_last_setpoint.position[2] = last_cmd_.position[2];
+        traj_complete_flag_.traj_last_setpoint.yaw = last_cmd_.yaw;
         traj_completed_flag_pub_->publish(traj_complete_flag_);
         RCLCPP_INFO(get_logger(), "CSV transit complete | count=%zu", csv_waypoints_.size());
     }
@@ -557,6 +561,10 @@ void OffboardControlBridge::controlLoopOnTimer() {
                 takeoff_complete_ = true;
                 traj_complete_flag_.take_off_completed = true;
                 traj_complete_flag_.trajectory_completed = false;
+                traj_complete_flag_.traj_first_setpoint.position[0] = last_cmd_.position[0];
+                traj_complete_flag_.traj_first_setpoint.position[1] = last_cmd_.position[1];
+                traj_complete_flag_.traj_first_setpoint.position[2] = last_cmd_.position[2];
+                traj_complete_flag_.traj_first_setpoint.yaw = last_cmd_.yaw;
                 traj_completed_flag_pub_->publish(traj_complete_flag_);
                 flight_state_ = FlightState::TRAJECTORY_FOLLOWING;
                 RCLCPP_INFO(get_logger(), "Bridge state -> TRAJECTORY_FOLLOWING | takeoff complete pos=(%.2f, %.2f, %.2f)", uav_pose_.pose.position.x, uav_pose_.pose.position.y, uav_pose_.pose.position.z);
