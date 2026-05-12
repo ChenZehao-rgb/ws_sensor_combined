@@ -13,6 +13,7 @@
 #include <px4_msgs/msg/vehicle_attitude.hpp>
 #include <px4_msgs/msg/vehicle_imu.hpp>
 #include <px4_msgs/msg/vehicle_local_position.hpp>
+#include <px4_msgs/msg/vehicle_status.hpp>
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
@@ -28,6 +29,7 @@
 #include <cstdint>
 #include <cmath>
 #include <mutex>
+#include <optional>
 #include <std_msgs/msg/string.hpp>
 #include <sstream>
 #include <string>
@@ -65,6 +67,7 @@ class OffboardControlBridge : public rclcpp::Node {
         }
         // Initialize offboard_state_ data
         offboard_state_.data = "WAITINGFORCOMMAND";
+        uav_pose_.pose.orientation.w = 1.0;
         // PX4 pubs
         offboard_ctrl_mode_pub_ = this->create_publisher<px4_msgs::msg::OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
         traj_setpoint_pub_ = this->create_publisher<px4_msgs::msg::TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
@@ -87,6 +90,8 @@ class OffboardControlBridge : public rclcpp::Node {
             "/fmu/out/vehicle_imu", qos, std::bind(&OffboardControlBridge::VehicleImuCallback, this, std::placeholders::_1));
         vehicle_home_position_sub_ = this->create_subscription<px4_msgs::msg::HomePosition>(
             "/fmu/out/home_position", qos, std::bind(&OffboardControlBridge::VehicleHomePositionCallback, this, std::placeholders::_1));
+        vehicle_status_sub_ = this->create_subscription<px4_msgs::msg::VehicleStatus>(
+            "/fmu/out/vehicle_status_v1", qos, std::bind(&OffboardControlBridge::VehicleStatusCallback, this, std::placeholders::_1));
         offboard_state_sub_ = this->create_subscription<std_msgs::msg::String>(
             "/uav_offboard_fsm/offboard_state", 10, std::bind(&OffboardControlBridge::OffboardStateCallback, this, std::placeholders::_1));
         // Service to set target for online trajectory generator
@@ -101,7 +106,8 @@ class OffboardControlBridge : public rclcpp::Node {
         // Control timer: pair OffboardControlMode with a setpoint
         timer_ = this->create_wall_timer(50ms, std::bind(&OffboardControlBridge::controlLoopOnTimer, this));
         RCLCPP_INFO(get_logger(),
-                    "Offboard bridge ready | fsm_state=/uav_offboard_fsm/offboard_state set_target=online_traj_generator/set_target traj_service=/online_traj_generator/get_trajectory_setpoints");
+                    "Offboard bridge ready | use_takeoff_on_ground=%s fsm_state=/uav_offboard_fsm/offboard_state set_target=online_traj_generator/set_target traj_service=/online_traj_generator/get_trajectory_setpoints",
+                    use_takeoff_on_ground_ ? "true" : "false");
     }
 
   private:
@@ -119,6 +125,7 @@ class OffboardControlBridge : public rclcpp::Node {
     geometry_msgs::msg::TwistStamped uav_twist_;
     sensor_msgs::msg::Imu uav_imu_;
     px4_msgs::msg::HomePosition uav_home_position_;
+    px4_msgs::msg::VehicleStatus vehicle_status_;
     std_msgs::msg::String offboard_state_;
     px4_msgs::msg::TrajectorySetpoint target_pose_;
     px4_msgs::msg::TrajectorySetpoint takeoff_setpoint_{}, csv_transit_first_setpoint_{};
@@ -127,6 +134,12 @@ class OffboardControlBridge : public rclcpp::Node {
     uint64_t target_generation_{0};
     uint64_t forwarded_target_generation_{0};
     std::mutex bridge_mutex_;
+    bool use_takeoff_on_ground_{false};
+    bool has_local_position_{false};
+    bool has_vehicle_status_{false};
+    bool px4_offboard_active_{false};
+    bool manual_hover_setpoint_valid_{false};
+    px4_msgs::msg::TrajectorySetpoint manual_hover_setpoint_{};
 
     std::string waypoints_csv_path_{"/home/sia/ws_sensor_combined/src/uav_offboard/zmxROS2/waypoints.csv"};
     double csv_stream_rate_hz_{50.0};
@@ -153,6 +166,7 @@ class OffboardControlBridge : public rclcpp::Node {
     rclcpp::Subscription<px4_msgs::msg::VehicleAttitude>::SharedPtr vehicle_attitude_sub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleImu>::SharedPtr vehicle_imu_sub_;
     rclcpp::Subscription<px4_msgs::msg::HomePosition>::SharedPtr vehicle_home_position_sub_;
+    rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr vehicle_status_sub_;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr offboard_state_sub_;
 
     rclcpp::Publisher<px4_msgs::msg::OffboardControlMode>::SharedPtr offboard_ctrl_mode_pub_;
@@ -171,9 +185,10 @@ class OffboardControlBridge : public rclcpp::Node {
     rclcpp::Time last_cmd_time_{};
 
     void VehicleLocalPositionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
-	void VehicleAttitudeCallback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg);
-	void VehicleImuCallback(const px4_msgs::msg::VehicleImu::SharedPtr msg);
+    void VehicleAttitudeCallback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg);
+    void VehicleImuCallback(const px4_msgs::msg::VehicleImu::SharedPtr msg);
     void VehicleHomePositionCallback(const px4_msgs::msg::HomePosition::SharedPtr msg);
+    void VehicleStatusCallback(const px4_msgs::msg::VehicleStatus::SharedPtr msg);
     void OffboardStateCallback(const std_msgs::msg::String::SharedPtr msg);
 	void publish_offboard_control_mode_pva();
     void publish_offboard_control_mode_pv();
@@ -185,9 +200,12 @@ class OffboardControlBridge : public rclcpp::Node {
     void reset_csv_transit();
     px4_msgs::msg::TrajectorySetpoint convertENUToNED(const px4_msgs::msg::TrajectorySetpoint &enu_setpoint) const;
     px4_msgs::msg::TrajectorySetpoint makePositionHoldSetpoint(float x, float y, float z, float yaw) const;
+    px4_msgs::msg::TrajectorySetpoint makeCurrentLocalPositionHoldSetpoint() const;
     px4_msgs::msg::TrajectorySetpoint getCsvFirstSetpoint() const;
     px4_msgs::msg::TrajectorySetpoint makeCsvSetpoint(const CsvWaypoint & waypoint) const;
     px4_msgs::msg::TrajectorySetpoint publishConvertedSetpoint(px4_msgs::msg::TrajectorySetpoint enu_setpoint);
+    void publishManualHoverSetpoint();
+    void captureManualHoverSetpoint();
     bool isArrivedAtPosition(px4_msgs::msg::TrajectorySetpoint setpoint, float tolerance);
     void controlLoopOnTimer();
     void publish_takeoff_setpoint(px4_msgs::msg::TrajectorySetpoint takeoff_setpoint);
@@ -197,6 +215,16 @@ class OffboardControlBridge : public rclcpp::Node {
 };
 
 void OffboardControlBridge::VehicleLocalPositionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
+    if (!msg->xy_valid || !msg->z_valid) {
+        has_local_position_ = false;
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
+                             "PX4 local position invalid | xy_valid=%s z_valid=%s",
+                             msg->xy_valid ? "true" : "false",
+                             msg->z_valid ? "true" : "false");
+        return;
+    }
+
+    has_local_position_ = true;
     uav_pose_.header.stamp = this->now();
     uav_pose_.header.frame_id = "map"; // ENU frame
     // PX4 NED to ROS ENU frame
@@ -231,6 +259,29 @@ void OffboardControlBridge::VehicleHomePositionCallback(const px4_msgs::msg::Hom
                          "PX4 home position | ned=(%.2f, %.2f, %.2f)",
                          uav_home_position_.x, uav_home_position_.y, uav_home_position_.z);
 }
+
+void OffboardControlBridge::VehicleStatusCallback(const px4_msgs::msg::VehicleStatus::SharedPtr msg) {
+    const bool was_offboard = px4_offboard_active_;
+    vehicle_status_ = *msg;
+    has_vehicle_status_ = true;
+    px4_offboard_active_ =
+        msg->nav_state == px4_msgs::msg::VehicleStatus::NAVIGATION_STATE_OFFBOARD;
+
+    if (use_takeoff_on_ground_) {
+        return;
+    }
+    // 之前不是 OFFBOARD，现在是 OFFBOARD。switch moment
+    if (!was_offboard && px4_offboard_active_) {
+        captureManualHoverSetpoint();
+        return;
+    }
+
+    if (was_offboard && !px4_offboard_active_) {
+        manual_hover_setpoint_valid_ = false;
+        RCLCPP_INFO(get_logger(), "PX4 OFFBOARD exited | manual hover setpoint cleared");
+    }
+}
+
 void OffboardControlBridge::OffboardStateCallback(const std_msgs::msg::String::SharedPtr msg) {
     const auto previous_state = offboard_state_.data;
     offboard_state_ = *msg;
@@ -337,6 +388,46 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makePositionHoldSetpoin
     setpoint.yaw = yaw;
     // setpoint.yawspeed = 0.0f;
     return setpoint;
+}
+
+px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makeCurrentLocalPositionHoldSetpoint() const {
+    double roll, pitch, yaw;
+    quat2RPY(uav_pose_.pose.orientation, roll, pitch, yaw);
+    return makePositionHoldSetpoint(
+        static_cast<float>(uav_pose_.pose.position.x),
+        static_cast<float>(uav_pose_.pose.position.y),
+        static_cast<float>(uav_pose_.pose.position.z),
+        static_cast<float>(yaw));
+}
+
+void OffboardControlBridge::publishManualHoverSetpoint() {
+    if (!manual_hover_setpoint_valid_) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+                             "Manual hover unavailable | waiting for PX4 OFFBOARD switch and valid local position");
+        return;
+    }
+
+    last_cmd_ = publishConvertedSetpoint(manual_hover_setpoint_);
+    last_cmd_time_ = this->now();
+}
+
+void OffboardControlBridge::captureManualHoverSetpoint() {
+    if (!has_local_position_) {
+        RCLCPP_WARN(get_logger(),
+                    "PX4 OFFBOARD entered manually but local position is not valid; cannot capture hover setpoint yet");
+        return;
+    }
+
+    manual_hover_setpoint_ = makeCurrentLocalPositionHoldSetpoint();
+    manual_hover_setpoint_valid_ = true;
+    RCLCPP_INFO(get_logger(),
+                "PX4 OFFBOARD entered manually | holding latest local position enu=(%.2f, %.2f, %.2f, yaw %.2f)",
+                manual_hover_setpoint_.position[0],
+                manual_hover_setpoint_.position[1],
+                manual_hover_setpoint_.position[2],
+                manual_hover_setpoint_.yaw);
+    publish_offboard_control_mode_pva();
+    publishManualHoverSetpoint();
 }
 
 px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::getCsvFirstSetpoint() const {
@@ -535,25 +626,61 @@ void OffboardControlBridge::controlLoopOnTimer() {
     switch (flight_state_) {
         case FlightState::WAITINGFORCOMMAND: {
             publish_offboard_control_mode_pva();
+            if (use_takeoff_on_ground_) {
+                if(offboard_state_.data == "UAV_START") {
+                    flight_state_ = FlightState::TAKEOFF;
+                    RCLCPP_INFO(get_logger(), "Bridge state -> TAKEOFF | trigger=%s arming and publishing takeoff setpoints",
+                                offboard_state_.data.c_str());
+                } else {
+                    RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
+                                         "Bridge waiting | expected FSM state UAV_START on /uav_offboard_fsm/offboard_state");
+                }
+                break;
+            }
+            // no received status
+            if (!has_vehicle_status_) {
+                if (has_local_position_) {
+                    last_cmd_ = publishConvertedSetpoint(makeCurrentLocalPositionHoldSetpoint());
+                    last_cmd_time_ = this->now();
+                }
+                RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
+                                     "Manual takeoff mode | waiting for PX4 status on /fmu/out/vehicle_status");
+                break;
+            }
+            // no offboard switched
+            if (!px4_offboard_active_) {
+                if (has_local_position_) {
+                    last_cmd_ = publishConvertedSetpoint(makeCurrentLocalPositionHoldSetpoint());
+                    last_cmd_time_ = this->now();
+                }
+                RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
+                                     "Manual takeoff mode | waiting for pilot to switch PX4 to OFFBOARD");
+                break;
+            }
+            // if fsm switched state
             if(offboard_state_.data == "UAV_START") {
                 flight_state_ = FlightState::TAKEOFF;
-                RCLCPP_INFO(get_logger(), "Bridge state -> TAKEOFF | trigger=%s arming and publishing takeoff setpoints",
+                RCLCPP_INFO(get_logger(), "Bridge state -> TAKEOFF | trigger=%s manual offboard active, publishing takeoff setpoints",
                             offboard_state_.data.c_str());
-            } else {
+            } else { // else, manual_hover_setpoint_ is built, and pub every circle
+                if (!manual_hover_setpoint_valid_ && has_local_position_) {
+                    captureManualHoverSetpoint();
+                }
+                publishManualHoverSetpoint();
                 RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
-                                     "Bridge waiting | expected FSM state UAV_START on /uav_offboard_fsm/offboard_state");
+                                     "Manual offboard active | hovering until FSM state UAV_START");
             }
             break;
         }
         case FlightState::TAKEOFF: {
             publish_offboard_control_mode_pva();
-            if (offboard_setpoint_counter_ == 10) {
+            if (use_takeoff_on_ground_ && offboard_setpoint_counter_ == 10) {
                 // Switch to offboard mode and arm after sending initial setpoints
                 publish_vehicle_command(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
                 publish_vehicle_command(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0f);
                 RCLCPP_INFO(get_logger(), "PX4 command sent | mode=OFFBOARD arm=true");
             }
-            if (offboard_setpoint_counter_ < 11) {
+            if (use_takeoff_on_ground_ && offboard_setpoint_counter_ < 11) {
                 ++offboard_setpoint_counter_;
             }
             publish_takeoff_setpoint(takeoff_setpoint_);

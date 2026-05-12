@@ -8,6 +8,7 @@ from launch.actions import DeclareLaunchArgument, ExecuteProcess, LogInfo
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def resolve_workspace_root(launch_file: Path) -> Path:
@@ -27,6 +28,7 @@ def generate_launch_description() -> LaunchDescription:
     use_mock_px4 = LaunchConfiguration('use_mock_px4')
     record_bag = LaunchConfiguration('record_bag')
     log_level = LaunchConfiguration('log_level')
+    use_takeoff_on_ground = LaunchConfiguration('use_takeoff_on_ground')
     ros_args = ['--ros-args', '--log-level', log_level]
 
     topics_to_record = [
@@ -40,6 +42,7 @@ def generate_launch_description() -> LaunchDescription:
         '/fmu/out/vehicle_local_position',
         '/fmu/out/vehicle_attitude',
         '/fmu/out/vehicle_imu',
+        '/fmu/out/vehicle_status',
         '/fmu/out/home_position',
         '/fmu/out/distance_sensor',
         '/fmu/in/trajectory_setpoint',
@@ -54,6 +57,9 @@ def generate_launch_description() -> LaunchDescription:
         name='offboard_control_bridge',
         output='screen',
         emulate_tty=True,
+        parameters=[{
+            'use_takeoff_on_ground': ParameterValue(use_takeoff_on_ground, value_type=bool),
+        }],
         arguments=ros_args,
     )
 
@@ -100,6 +106,10 @@ def generate_launch_description() -> LaunchDescription:
             'log_level',
             default_value='info',
             description='ROS log level for traj_offboard nodes'),
+        DeclareLaunchArgument(
+            'use_takeoff_on_ground',
+            default_value='true',
+            description='true for bridge-controlled ground takeoff; false for pilot takeoff then manual PX4 OFFBOARD hover handoff'),
         LogInfo(msg='traj_offboard: starting offboard bridge and online trajectory generator'),
         LogInfo(msg='traj_offboard: start FSM with uav_offboard_fsm.launch.py and keyboard node in separate terminals'),
         LogInfo(msg=f'rosbag: output={bag_output}', condition=IfCondition(record_bag)),

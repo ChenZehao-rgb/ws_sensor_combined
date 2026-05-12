@@ -62,6 +62,7 @@ target_include_directories(online_traj_node PUBLIC
 add_executable(offboard_control_bridge_node src/offboard_control.cpp)
 ament_target_dependencies(offboard_control_bridge_node
   rclcpp
+  std_msgs
   sensor_msgs
   geometry_msgs
   px4_msgs
