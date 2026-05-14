@@ -8,10 +8,9 @@
 #include <chrono>
 
 // CSV 保存路径（硬编码绝对路径）
-static constexpr const char * CSV_PATH = "/home/sia/Desktop/zmxROS2/waypoints.csv";
-
-// 超时时间（秒）
-static constexpr double TIMEOUT_SEC = 20.0;
+static constexpr const char * CSV_PATH = "/home/neu/manipulator_ws/src/uav_offboard/waypoints.csv";
+// 超时时间（秒）- 连续两个航点之间的最大间隔
+static constexpr double TIMEOUT_SEC = 5.0;
 
 class WaypointReceiverNode : public rclcpp::Node
 {
@@ -59,7 +58,6 @@ private:
       RCLCPP_INFO(
         this->get_logger(),
         "开始接收航点数据，预期总数: %ld", expected_total_);
-      start_timeout_timer();
     }
 
     // 总数不一致时（对方中途改变了 point_num），重置
@@ -69,7 +67,6 @@ private:
         "point_num 变化（%ld -> %ld），重置缓存", expected_total_, msg->point_num);
       reset();
       expected_total_ = msg->point_num;
-      start_timeout_timer();
     }
 
     // 存入 map（重复 index 会覆盖，防止对方重发）
@@ -81,6 +78,8 @@ private:
       RCLCPP_DEBUG(
         this->get_logger(),
         "收到航点 [%ld/%ld]", idx, expected_total_ - 1);
+      // 每次收到新航点都重置超时计时器
+      start_timeout_timer();
     }
 
     // 判断是否收齐

@@ -24,7 +24,7 @@ namespace traj_generator {
 
 // Problem dimensionality (x, y, z, yaw)
 constexpr int STATE_NUM = 4;
-constexpr double Ts = 0.05;  // s
+constexpr double Ts = 0.02;  // s
 constexpr double POS_ERROR_TOLERATE = 0.05;
 constexpr double YAW_ERROR_TOLERATE = 0.05;
 

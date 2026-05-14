@@ -104,7 +104,7 @@ class OffboardControlBridge : public rclcpp::Node {
         
         traj_completed_flag_pub_ = this->create_publisher<traj_offboard::msg::TrajCompleteFlag>("/traj_offboard/traj_complete_flag", 10);
         // Control timer: pair OffboardControlMode with a setpoint
-        timer_ = this->create_wall_timer(50ms, std::bind(&OffboardControlBridge::controlLoopOnTimer, this));
+        timer_ = this->create_wall_timer(20ms, std::bind(&OffboardControlBridge::controlLoopOnTimer, this));
         RCLCPP_INFO(get_logger(),
                     "Offboard bridge ready | use_takeoff_on_ground=%s fsm_state=/uav_offboard_fsm/offboard_state set_target=online_traj_generator/set_target traj_service=/online_traj_generator/get_trajectory_setpoints",
                     use_takeoff_on_ground_ ? "true" : "false");
@@ -140,8 +140,10 @@ class OffboardControlBridge : public rclcpp::Node {
     bool px4_offboard_active_{false};
     bool manual_hover_setpoint_valid_{false};
     px4_msgs::msg::TrajectorySetpoint manual_hover_setpoint_{};
+    double latest_heading_yaw_enu_{0.0};
+    bool has_heading_yaw_{false};
 
-    std::string waypoints_csv_path_{"/home/sia/ws_sensor_combined/src/uav_offboard/zmxROS2/waypoints.csv"};
+    std::string waypoints_csv_path_{"/home/sia/ws_sensor_combined/src/uav_offboard/waypoints.csv"};
     double csv_stream_rate_hz_{50.0};
     double csv_default_yaw_{0.0};
     std::vector<CsvWaypoint> csv_waypoints_;
@@ -198,6 +200,8 @@ class OffboardControlBridge : public rclcpp::Node {
     void publish_trajectory_setpoint();
     void publish_csv_transit_setpoint();
     void reset_csv_transit();
+    static double wrapAngle(double angle);
+    double getCurrentYawEnu() const;
     px4_msgs::msg::TrajectorySetpoint convertENUToNED(const px4_msgs::msg::TrajectorySetpoint &enu_setpoint) const;
     px4_msgs::msg::TrajectorySetpoint makePositionHoldSetpoint(float x, float y, float z, float yaw) const;
     px4_msgs::msg::TrajectorySetpoint makeCurrentLocalPositionHoldSetpoint() const;
@@ -213,6 +217,21 @@ class OffboardControlBridge : public rclcpp::Node {
     std::optional<CsvWaypoint> parseCsvWaypointLine(const std::string & line,
                                                     std::size_t line_number) const;
 };
+
+// Wraps an angle to the range [-pi, pi)
+double OffboardControlBridge::wrapAngle(double angle) {
+    return std::atan2(std::sin(angle), std::cos(angle));
+}
+
+double OffboardControlBridge::getCurrentYawEnu() const {
+    if (has_heading_yaw_) {
+        return latest_heading_yaw_enu_;
+    }
+
+    double roll, pitch, yaw;
+    quat2RPY(uav_pose_.pose.orientation, roll, pitch, yaw);
+    return yaw;
+}
 
 void OffboardControlBridge::VehicleLocalPositionCallback(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
     if (!msg->xy_valid || !msg->z_valid) {
@@ -231,6 +250,13 @@ void OffboardControlBridge::VehicleLocalPositionCallback(const px4_msgs::msg::Ve
     uav_pose_.pose.position.x = msg->y - uav_home_position_.y;
     uav_pose_.pose.position.y = msg->x - uav_home_position_.x;
     uav_pose_.pose.position.z = -msg->z + uav_home_position_.z;
+
+    static constexpr double HALF_PI = 1.5707963267948966;
+    if (std::isfinite(msg->heading)) {
+        // PX4 heading is clockwise from North, we want counterclockwise from East, so ENU yaw = 90deg - heading
+        latest_heading_yaw_enu_ = wrapAngle(HALF_PI - static_cast<double>(msg->heading));
+        has_heading_yaw_ = true;
+    }
 }
 void OffboardControlBridge::VehicleAttitudeCallback(const px4_msgs::msg::VehicleAttitude::SharedPtr msg) {
     // PX4 NED to ROS ENU frame
@@ -391,13 +417,11 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makePositionHoldSetpoin
 }
 
 px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makeCurrentLocalPositionHoldSetpoint() const {
-    double roll, pitch, yaw;
-    quat2RPY(uav_pose_.pose.orientation, roll, pitch, yaw);
     return makePositionHoldSetpoint(
         static_cast<float>(uav_pose_.pose.position.x),
         static_cast<float>(uav_pose_.pose.position.y),
         static_cast<float>(uav_pose_.pose.position.z),
-        static_cast<float>(yaw));
+        static_cast<float>(getCurrentYawEnu()));
 }
 
 void OffboardControlBridge::publishManualHoverSetpoint() {
@@ -445,8 +469,8 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makeCsvSetpoint(const C
     setpoint.position[0] = static_cast<float>(waypoint.y) - csv_transit_first_setpoint_.position[1];
     setpoint.position[1] = static_cast<float>(waypoint.x) - csv_transit_first_setpoint_.position[0];
     setpoint.position[2] = static_cast<float>(waypoint.z) - 35;
-    setpoint.velocity[0] = static_cast<float>(waypoint.vy);
-    setpoint.velocity[1] = static_cast<float>(waypoint.vx);
+    setpoint.velocity[0] = static_cast<float>(waypoint.vx);
+    setpoint.velocity[1] = static_cast<float>(waypoint.vy);
     setpoint.velocity[2] = static_cast<float>(waypoint.vz);
     setpoint.yaw = static_cast<float>(waypoint.yaw);
     return setpoint;
@@ -497,9 +521,7 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
     current_state.position[0] = uav_pose_.pose.position.x;
     current_state.position[1] = uav_pose_.pose.position.y;
     current_state.position[2] = uav_pose_.pose.position.z;
-    double roll, pitch, yaw;
-    quat2RPY(uav_pose_.pose.orientation, roll, pitch, yaw);
-    current_state.yaw = yaw;
+    current_state.yaw = static_cast<float>(getCurrentYawEnu());
 
     auto request = std::make_shared<traj_offboard::srv::GetTrajectorySetpoint::Request>();
     request->current_state = current_state;
@@ -593,9 +615,7 @@ void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySe
     current_state.position[0] = uav_pose_.pose.position.x;
     current_state.position[1] = uav_pose_.pose.position.y;
     current_state.position[2] = uav_pose_.pose.position.z;
-    double roll, pitch, yaw;
-    quat2RPY(uav_pose_.pose.orientation, roll, pitch, yaw);
-    current_state.yaw = yaw;
+    current_state.yaw = static_cast<float>(getCurrentYawEnu());
 
     auto request = std::make_shared<traj_offboard::srv::GetTrajectorySetpoint::Request>();
     request->current_state = current_state;
