@@ -13,6 +13,10 @@
 
 #include <traj_offboard/online_traj_generator.h>
 
+// ANSI color helpers for terminal log highlights (green = node ready / first trajectory).
+#define LOG_COLOR_GREEN "\033[1;32m"
+#define LOG_COLOR_RESET "\033[0m"
+
 using traj_generator::TrajGenerator;
 using traj_generator::STATE_NUM;
 
@@ -31,7 +35,7 @@ public:
 		get_traj_setpoints_srv_ = this->create_service<traj_offboard::srv::GetTrajectorySetpoint>(
 			"/online_traj_generator/get_trajectory_setpoints", std::bind(&OnlineTrajGenerator::handleGetTrajSetpoints, this, std::placeholders::_1, std::placeholders::_2));
     RCLCPP_INFO(get_logger(),
-                "Online trajectory generator ready | service=/online_traj_generator/get_trajectory_setpoints debug_topics=/online_traj_generator/ruckig_*");
+                LOG_COLOR_GREEN "Online trajectory generator ready | service=/online_traj_generator/get_trajectory_setpoints debug_topics=/online_traj_generator/ruckig_*" LOG_COLOR_RESET);
 	}
 
 private:
@@ -114,7 +118,7 @@ private:
     if (seed_current_from_request) {
       current_state_ = request->current_state;
       isFirstTraj_ = false;
-      RCLCPP_INFO(get_logger(), "Trajectory generator active | first request received");
+      RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "Trajectory generator active | first request received" LOG_COLOR_RESET);
     } else {
       current_state_ = last_command_state_;
     }

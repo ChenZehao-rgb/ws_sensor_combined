@@ -38,6 +38,10 @@
 
 using namespace std::chrono_literals;
 
+// ANSI color helpers for terminal log highlights (green = bridge state switch / arm success).
+#define LOG_COLOR_GREEN "\033[1;32m"
+#define LOG_COLOR_RESET "\033[0m"
+
 static inline void quat2RPY(const geometry_msgs::msg::Quaternion &quat, double &roll,
                             double &pitch, double &yaw) {
 	tf2::Quaternion q(quat.x, quat.y, quat.z, quat.w);
@@ -86,8 +90,6 @@ class OffboardControlBridge : public rclcpp::Node {
             "/fmu/out/vehicle_local_position", qos, std::bind(&OffboardControlBridge::VehicleLocalPositionCallback, this, std::placeholders::_1));
         vehicle_attitude_sub_ = this->create_subscription<px4_msgs::msg::VehicleAttitude>(
             "/fmu/out/vehicle_attitude", qos, std::bind(&OffboardControlBridge::VehicleAttitudeCallback, this, std::placeholders::_1));
-        vehicle_imu_sub_ = this->create_subscription<px4_msgs::msg::VehicleImu>(
-            "/fmu/out/vehicle_imu", qos, std::bind(&OffboardControlBridge::VehicleImuCallback, this, std::placeholders::_1));
         vehicle_home_position_sub_ = this->create_subscription<px4_msgs::msg::HomePosition>(
             "/fmu/out/home_position", qos, std::bind(&OffboardControlBridge::VehicleHomePositionCallback, this, std::placeholders::_1));
         vehicle_status_sub_ = this->create_subscription<px4_msgs::msg::VehicleStatus>(
@@ -106,7 +108,7 @@ class OffboardControlBridge : public rclcpp::Node {
         // Control timer: pair OffboardControlMode with a setpoint
         timer_ = this->create_wall_timer(20ms, std::bind(&OffboardControlBridge::controlLoopOnTimer, this));
         RCLCPP_INFO(get_logger(),
-                    "Offboard bridge ready | use_takeoff_on_ground=%s fsm_state=/uav_offboard_fsm/offboard_state set_target=online_traj_generator/set_target traj_service=/online_traj_generator/get_trajectory_setpoints",
+                    LOG_COLOR_GREEN "Offboard bridge ready | use_takeoff_on_ground=%s fsm_state=/uav_offboard_fsm/offboard_state set_target=online_traj_generator/set_target traj_service=/online_traj_generator/get_trajectory_setpoints" LOG_COLOR_RESET,
                     use_takeoff_on_ground_ ? "true" : "false");
     }
 
@@ -123,7 +125,6 @@ class OffboardControlBridge : public rclcpp::Node {
     // State holders
     geometry_msgs::msg::PoseStamped uav_pose_;
     geometry_msgs::msg::TwistStamped uav_twist_;
-    sensor_msgs::msg::Imu uav_imu_;
     px4_msgs::msg::HomePosition uav_home_position_;
     px4_msgs::msg::VehicleStatus vehicle_status_;
     std_msgs::msg::String offboard_state_;
@@ -134,7 +135,7 @@ class OffboardControlBridge : public rclcpp::Node {
     uint64_t target_generation_{0};
     uint64_t forwarded_target_generation_{0};
     std::mutex bridge_mutex_;
-    bool use_takeoff_on_ground_{false};
+    bool use_takeoff_on_ground_{true};
     bool has_local_position_{false};
     bool has_vehicle_status_{false};
     bool px4_offboard_active_{false};
@@ -161,7 +162,7 @@ class OffboardControlBridge : public rclcpp::Node {
     };
     FlightState flight_state_{FlightState::WAITINGFORCOMMAND};
     bool takeoff_complete_{false};
-    static constexpr float POSITION_TOLERANCE = 0.2f;
+    static constexpr float POSITION_TOLERANCE = 0.1f;
 
     // ROS interfaces
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;
@@ -265,25 +266,15 @@ void OffboardControlBridge::VehicleAttitudeCallback(const px4_msgs::msg::Vehicle
 	uav_pose_.pose.orientation.z = -msg->q[2];
 	uav_pose_.pose.orientation.w = msg->q[3];
 }
-void OffboardControlBridge::VehicleImuCallback(const px4_msgs::msg::VehicleImu::SharedPtr msg) {
-	uav_imu_.header.stamp = this->now();
-	uav_imu_.header.frame_id = "base_link"; // NED frame
-	// PX4 NED to ROS ENU frame
-	uav_imu_.angular_velocity.x = msg->delta_velocity[1];
-	uav_imu_.angular_velocity.y = msg->delta_velocity[0];
-	uav_imu_.angular_velocity.z = -msg->delta_velocity[2];
-	uav_imu_.linear_acceleration.x = msg->delta_angle[1];
-	uav_imu_.linear_acceleration.y = msg->delta_angle[0];
-	uav_imu_.linear_acceleration.z = -msg->delta_angle[2];
-}
+
 void OffboardControlBridge::VehicleHomePositionCallback(const px4_msgs::msg::HomePosition::SharedPtr msg) {
     uav_home_position_.timestamp = msg->timestamp;
     uav_home_position_.x = msg->x;
     uav_home_position_.y = msg->y;
     uav_home_position_.z = msg->z;
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                         "PX4 home position | ned=(%.2f, %.2f, %.2f)",
-                         uav_home_position_.x, uav_home_position_.y, uav_home_position_.z);
+    RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                          "PX4 home position | ned=(%.2f, %.2f, %.2f)",
+                          uav_home_position_.x, uav_home_position_.y, uav_home_position_.z);
 }
 
 void OffboardControlBridge::VehicleStatusCallback(const px4_msgs::msg::VehicleStatus::SharedPtr msg) {
@@ -501,8 +492,8 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
     bool sent_target_update = false;
 
     while (!get_traj_setpoint_client_->service_is_ready()) {
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
-                             "Trajectory service unavailable | waiting for /online_traj_generator/get_trajectory_setpoints");
+        RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 3000,
+                              "Trajectory service unavailable | waiting for /online_traj_generator/get_trajectory_setpoints");
         return;
     }
     {
@@ -577,7 +568,7 @@ void OffboardControlBridge::publish_csv_transit_setpoint() {
     }
 
     csv_transit_index_ = csv_waypoints_.size();
-    if (!csv_transit_complete_logged_) {
+    if (!csv_transit_complete_logged_ && isArrivedAtPosition(makeCsvSetpoint(csv_waypoints_.back()), POSITION_TOLERANCE)) {
         csv_transit_complete_logged_ = true;
         traj_complete_flag_.trajectory_completed = true;
         traj_complete_flag_.traj_last_setpoint.position[0] = last_cmd_.position[0];
@@ -585,7 +576,8 @@ void OffboardControlBridge::publish_csv_transit_setpoint() {
         traj_complete_flag_.traj_last_setpoint.position[2] = last_cmd_.position[2];
         traj_complete_flag_.traj_last_setpoint.yaw = last_cmd_.yaw;
         traj_completed_flag_pub_->publish(traj_complete_flag_);
-        RCLCPP_INFO(get_logger(), "CSV transit complete | count=%zu", csv_waypoints_.size());
+        RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "CSV transit complete | count=%zu, current=(%.2f, %.2f, %.2f, yaw %.2f)" LOG_COLOR_RESET, csv_waypoints_.size(), 
+                                                    last_cmd_.position[0], last_cmd_.position[1], last_cmd_.position[2], last_cmd_.yaw);
     }
 }
 
@@ -598,8 +590,8 @@ void OffboardControlBridge::reset_csv_transit() {
 void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySetpoint takeoff_setpoint) {
     px4_msgs::msg::TrajectorySetpoint current_state;
     while (!get_traj_setpoint_client_->service_is_ready()) {
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
-                             "Trajectory service unavailable | waiting for /online_traj_generator/get_trajectory_setpoints");
+        RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 3000,
+                              "Trajectory service unavailable | waiting for /online_traj_generator/get_trajectory_setpoints");
         return;
     }
     {
@@ -649,11 +641,11 @@ void OffboardControlBridge::controlLoopOnTimer() {
             if (use_takeoff_on_ground_) {
                 if(offboard_state_.data == "UAV_START") {
                     flight_state_ = FlightState::TAKEOFF;
-                    RCLCPP_INFO(get_logger(), "Bridge state -> TAKEOFF | trigger=%s arming and publishing takeoff setpoints",
+                    RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "Bridge state -> TAKEOFF | trigger=%s arming and publishing takeoff setpoints" LOG_COLOR_RESET,
                                 offboard_state_.data.c_str());
                 } else {
-                    RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
-                                         "Bridge waiting | expected FSM state UAV_START on /uav_offboard_fsm/offboard_state");
+                    RCLCPP_DEBUG_THROTTLE(get_logger(), *this->get_clock(), 5000,
+                                          "Bridge waiting | expected FSM state UAV_START on /uav_offboard_fsm/offboard_state");
                 }
                 break;
             }
@@ -663,8 +655,8 @@ void OffboardControlBridge::controlLoopOnTimer() {
                     last_cmd_ = publishConvertedSetpoint(makeCurrentLocalPositionHoldSetpoint());
                     last_cmd_time_ = this->now();
                 }
-                RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
-                                     "Manual takeoff mode | waiting for PX4 status on /fmu/out/vehicle_status");
+                RCLCPP_DEBUG_THROTTLE(get_logger(), *this->get_clock(), 5000,
+                                      "Manual takeoff mode | waiting for PX4 status on /fmu/out/vehicle_status");
                 break;
             }
             // no offboard switched
@@ -673,22 +665,22 @@ void OffboardControlBridge::controlLoopOnTimer() {
                     last_cmd_ = publishConvertedSetpoint(makeCurrentLocalPositionHoldSetpoint());
                     last_cmd_time_ = this->now();
                 }
-                RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
-                                     "Manual takeoff mode | waiting for pilot to switch PX4 to OFFBOARD");
+                RCLCPP_DEBUG_THROTTLE(get_logger(), *this->get_clock(), 5000,
+                                      "Manual takeoff mode | waiting for pilot to switch PX4 to OFFBOARD");
                 break;
             }
             // if fsm switched state
             if(offboard_state_.data == "UAV_START") {
                 flight_state_ = FlightState::TAKEOFF;
-                RCLCPP_INFO(get_logger(), "Bridge state -> TAKEOFF | trigger=%s manual offboard active, publishing takeoff setpoints",
+                RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "Bridge state -> TAKEOFF | trigger=%s manual offboard active, publishing takeoff setpoints" LOG_COLOR_RESET,
                             offboard_state_.data.c_str());
             } else { // else, manual_hover_setpoint_ is built, and pub every circle
                 if (!manual_hover_setpoint_valid_ && has_local_position_) {
                     captureManualHoverSetpoint();
                 }
                 publishManualHoverSetpoint();
-                RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
-                                     "Manual offboard active | hovering until FSM state UAV_START");
+                RCLCPP_DEBUG_THROTTLE(get_logger(), *this->get_clock(), 5000,
+                                      "Manual offboard active | hovering until FSM state UAV_START");
             }
             break;
         }
@@ -698,7 +690,7 @@ void OffboardControlBridge::controlLoopOnTimer() {
                 // Switch to offboard mode and arm after sending initial setpoints
                 publish_vehicle_command(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
                 publish_vehicle_command(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0f);
-                RCLCPP_INFO(get_logger(), "PX4 command sent | mode=OFFBOARD arm=true");
+                RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "PX4 command sent | mode=OFFBOARD arm=true" LOG_COLOR_RESET);
             }
             if (use_takeoff_on_ground_ && offboard_setpoint_counter_ < 11) {
                 ++offboard_setpoint_counter_;
@@ -714,16 +706,16 @@ void OffboardControlBridge::controlLoopOnTimer() {
                 traj_complete_flag_.traj_first_setpoint.yaw = last_cmd_.yaw;
                 traj_completed_flag_pub_->publish(traj_complete_flag_);
                 flight_state_ = FlightState::TRAJECTORY_FOLLOWING;
-                RCLCPP_INFO(get_logger(), "Bridge state -> TRAJECTORY_FOLLOWING | takeoff complete pos=(%.2f, %.2f, %.2f)", uav_pose_.pose.position.x, uav_pose_.pose.position.y, uav_pose_.pose.position.z);
+                RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "Bridge state -> TRAJECTORY_FOLLOWING | takeoff complete pos=(%.2f, %.2f, %.2f)" LOG_COLOR_RESET, uav_pose_.pose.position.x, uav_pose_.pose.position.y, uav_pose_.pose.position.z);
             }
             else{
-                RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 3000,
-                                     "Takeoff progress | pos=(%.2f, %.2f, %.2f) target=(%.2f, %.2f, %.2f)",
-                                     uav_pose_.pose.position.x, uav_pose_.pose.position.y,
-                                     uav_pose_.pose.position.z,
-                                     takeoff_setpoint_.position[0],
-                                     takeoff_setpoint_.position[1],
-                                     takeoff_setpoint_.position[2]);
+                RCLCPP_DEBUG_THROTTLE(get_logger(), *this->get_clock(), 3000,
+                                      "Takeoff progress | pos=(%.2f, %.2f, %.2f) target=(%.2f, %.2f, %.2f)",
+                                      uav_pose_.pose.position.x, uav_pose_.pose.position.y,
+                                      uav_pose_.pose.position.z,
+                                      takeoff_setpoint_.position[0],
+                                      takeoff_setpoint_.position[1],
+                                      takeoff_setpoint_.position[2]);
             }
             break;
         }
@@ -737,13 +729,13 @@ void OffboardControlBridge::controlLoopOnTimer() {
             if(!has_target_) {
                 publish_offboard_control_mode_pva();
                 if (last_cmd_time_.nanoseconds() != 0) {
-                    RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
-                                         "Trajectory following | holding setpoint");
+                    RCLCPP_DEBUG_THROTTLE(get_logger(), *this->get_clock(), 5000,
+                                          "Trajectory following | holding setpoint");
                     last_cmd_ = publishConvertedSetpoint(last_cmd_);
                     last_cmd_time_ = this->now();
                 } else {
-                    RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 5000,
-                                         "Trajectory following | waiting for first target from FSM");
+                    RCLCPP_DEBUG_THROTTLE(get_logger(), *this->get_clock(), 5000,
+                                          "Trajectory following | waiting for first target from FSM");
                     publish_takeoff_setpoint(takeoff_setpoint_);
                 }
                 break;
