@@ -459,10 +459,10 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makeCsvSetpoint(const C
     px4_msgs::msg::TrajectorySetpoint setpoint{};
     setpoint.position[0] = static_cast<float>(waypoint.y) - csv_transit_first_setpoint_.position[1];
     setpoint.position[1] = static_cast<float>(waypoint.x) - csv_transit_first_setpoint_.position[0];
-    setpoint.position[2] = static_cast<float>(waypoint.z) - 35;
-    setpoint.velocity[0] = static_cast<float>(waypoint.vx);
-    setpoint.velocity[1] = static_cast<float>(waypoint.vy);
-    setpoint.velocity[2] = static_cast<float>(waypoint.vz);
+    setpoint.position[2] = -static_cast<float>(waypoint.z);
+    setpoint.velocity[0] = static_cast<float>(waypoint.vy);
+    setpoint.velocity[1] = static_cast<float>(waypoint.vx);
+    setpoint.velocity[2] = -static_cast<float>(waypoint.vz);
     setpoint.yaw = static_cast<float>(waypoint.yaw);
     return setpoint;
 }

@@ -17,8 +17,8 @@
 #endif
 
 #define YAW_VEL_LIMIT 0.2
-#define YAW_ACC_LIMIT 2.0
-#define YAW_JERK_LIMIT 20.0
+#define YAW_ACC_LIMIT 0.2
+#define YAW_JERK_LIMIT 0.2
 
 namespace traj_generator {
 
@@ -28,9 +28,9 @@ constexpr double Ts = 0.02;  // s
 constexpr double POS_ERROR_TOLERATE = 0.05;
 constexpr double YAW_ERROR_TOLERATE = 0.05;
 
-const std::vector<double> VEL_LIMIT = {5.0, 5.0, 5.0, YAW_VEL_LIMIT};
-const std::vector<double> ACC_LIMIT = {3.0, 3.0, 2.0, YAW_ACC_LIMIT};
-const std::vector<double> JERK_LIMIT = {2.0, 2.0, 2.0, YAW_JERK_LIMIT};
+const std::vector<double> VEL_LIMIT = {2.0, 2.0, 2.0, YAW_VEL_LIMIT};
+const std::vector<double> ACC_LIMIT = {1.0, 1.0, 1.0, YAW_ACC_LIMIT};
+const std::vector<double> JERK_LIMIT = {0.8, 0.8, 0.8, YAW_JERK_LIMIT};
 
 class TrajGenerator {
 #if TRAJ_OFFBOARD_HAVE_RUCKIG
