@@ -206,6 +206,7 @@ class UavOffboardFsm : public rclcpp::Node {
     double home_x_{0.0};
     double home_y_{0.0};
     double home_z_{0.0};
+    bool home_position_valid_{false};
     mutable std::mutex latest_state_mutex_;
     std::optional<double> latest_distance_m_;
     rclcpp::Time last_distance_sensor_time_{0, 0, RCL_ROS_TIME};
@@ -321,6 +322,7 @@ class UavOffboardFsm : public rclcpp::Node {
     Waypoint currentOrHoverWaypoint();
     bool hasFreshDistanceSensor();
     bool hasFreshVehicleLocalPosition();
+    bool hasValidHomePosition();
     bool isFreshStateTime(const rclcpp::Time & stamp) const;
 
     void generateSearchAdjustWaypoints();
@@ -526,9 +528,10 @@ void UavOffboardFsm::handleSelfCheck()
 
     if (!isSelfCheckOK()) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                             "SELF_CHECK | pending distance_sensor_ok=%s vehicle_local_position_ok=%s",
+                             "SELF_CHECK | pending distance_sensor_ok=%s vehicle_local_position_ok=%s home_position_ok=%s",
                              hasFreshDistanceSensor() ? "true" : "false",
-                             hasFreshVehicleLocalPosition() ? "true" : "false");
+                             hasFreshVehicleLocalPosition() ? "true" : "false",
+                             hasValidHomePosition() ? "true" : "false");
         return;
     }
 
@@ -985,10 +988,11 @@ void UavOffboardFsm::sendActiveTarget()
         });
 }
 
-// 自检条件判断：任务必须处于使能状态；如果参数要求测距传感器，则还必须有新鲜测距数据。
+// 自检条件判断：必须有新鲜的本地位置反馈和有效的 PX4 home 原点；如果参数要求测距传感器，则还必须有新鲜测距数据。
 bool UavOffboardFsm::isSelfCheckOK()
 {
-    return (!require_distance_sensor_ || hasFreshDistanceSensor()) && hasFreshVehicleLocalPosition();
+    return (!require_distance_sensor_ || hasFreshDistanceSensor()) &&
+           hasFreshVehicleLocalPosition() && hasValidHomePosition();
 }
 
 // 起飞完成判断：读取当前无人机位置，并检查是否已经到达 takeoff_waypoint 参数指定的起飞航点。
@@ -1087,6 +1091,13 @@ bool UavOffboardFsm::hasFreshVehicleLocalPosition()
         return false;
     }
     return (now() - last_actual_state_time_).seconds() <= vehicle_local_position_timeout_s_;
+}
+
+// Home 位置有效性判断：必须已收到 PX4 home，且其本地坐标 xyz 已设置(valid_lpos)并为有限值。
+bool UavOffboardFsm::hasValidHomePosition()
+{
+    std::lock_guard<std::mutex> lock(latest_state_mutex_);
+    return home_position_valid_;
 }
 
 // 生成搜索微调航点：围绕当前位置先偏航，再左右横移，最后回到原始姿态。
@@ -1756,6 +1767,8 @@ void UavOffboardFsm::handleHomePosition(const px4_msgs::msg::HomePosition::Share
     home_x_ = msg->x;
     home_y_ = msg->y;
     home_z_ = msg->z;
+    home_position_valid_ = msg->valid_lpos && std::isfinite(msg->x) &&
+                           std::isfinite(msg->y) && std::isfinite(msg->z);
 }
 
 // 测距传感器回调：只接受范围内且信号质量达到参数阈值的数据，并记录接收时间用于超时判断。
