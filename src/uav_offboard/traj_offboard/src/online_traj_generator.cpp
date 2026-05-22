@@ -114,11 +114,16 @@ private:
 
   void handleGetTrajSetpoints(const traj_offboard::srv::GetTrajectorySetpoint::Request::SharedPtr request,
 								 traj_offboard::srv::GetTrajectorySetpoint::Response::SharedPtr response) {
-    const bool seed_current_from_request = isFirstTraj_ || !hasLastCommand_;
+    const bool seed_current_from_request =
+        isFirstTraj_ || !hasLastCommand_ || request->reset_state;
     if (seed_current_from_request) {
       current_state_ = request->current_state;
-      isFirstTraj_ = false;
-      RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "Trajectory generator active | first request received" LOG_COLOR_RESET);
+      if (isFirstTraj_) {
+        isFirstTraj_ = false;
+        RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "Trajectory generator active | first request received" LOG_COLOR_RESET);
+      } else {
+        RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "Trajectory generator re-seeded from current state | reset_state requested" LOG_COLOR_RESET);
+      }
     } else {
       current_state_ = last_command_state_;
     }

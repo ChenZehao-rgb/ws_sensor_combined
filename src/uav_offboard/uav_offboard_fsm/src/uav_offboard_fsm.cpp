@@ -10,6 +10,7 @@
 #include <status_interfaces_pkg/srv/actuator_control.hpp>
 #include <status_interfaces_pkg/srv/switch_status.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
+#include <px4_msgs/msg/trajectory_setpoint.hpp>
 #include <traj_offboard/srv/set_target.hpp>
 #include <traj_offboard/msg/traj_complete_flag.hpp>
 
@@ -263,8 +264,10 @@ class UavOffboardFsm : public rclcpp::Node {
     int main_task_repeat_dispatch_period_ms_{500};
     int switch_status_urgency_{5};
 
-    Waypoint takeoff_waypoint_{};
+    Waypoint takeoff_waypoint_{};             // 起飞完成时由 traj_first_setpoint 覆盖
     Waypoint home_waypoint_{};
+    Waypoint transit_end_waypoint_{};         // TRANSIT_TO_AREA 结束时由 traj_last_setpoint 填充
+    bool transit_end_waypoint_valid_{false};
     std::vector<Waypoint> transit_waypoints_;
     std::vector<Waypoint> search_waypoints_;
     std::vector<Waypoint> approach_waypoints_;
@@ -320,6 +323,7 @@ class UavOffboardFsm : public rclcpp::Node {
     bool isWaypointReached(const Waypoint & waypoint, const sensor_msgs::msg::JointState & state);
     std::optional<Waypoint> currentWaypoint();
     Waypoint currentOrHoverWaypoint();
+    Waypoint waypointFromSetpoint(const px4_msgs::msg::TrajectorySetpoint & setpoint) const;
     bool hasFreshDistanceSensor();
     bool hasFreshVehicleLocalPosition();
     bool hasValidHomePosition();
@@ -471,10 +475,7 @@ void UavOffboardFsm::onStateEntry(ControlState state)
         case ControlState::UAV_BACK_HOME:
             back_home_index_ = 0;
             back_home_ = false;
-            home_waypoint_.x = traj_complete_flag_.traj_first_setpoint.position[0];
-            home_waypoint_.y = traj_complete_flag_.traj_first_setpoint.position[1];
-            home_waypoint_.z = traj_complete_flag_.traj_first_setpoint.position[2];
-            home_waypoint_.yaw = traj_complete_flag_.traj_first_setpoint.yaw;
+            home_waypoint_ = waypointFromSetpoint(traj_complete_flag_.traj_first_setpoint);
             back_home_waypoints_ = {home_waypoint_};
             break;
         case ControlState::UAV_START:
@@ -509,6 +510,7 @@ void UavOffboardFsm::resetMissionProgress()
     targ_got_confirm_pending_ = false;
     task_term_confirm_pending_ = false;
     switch_status_request_pending_ = false;
+    transit_end_waypoint_valid_ = false;
 }
 
 // 自检状态处理：等待 SELF_CHECK 指令，检查总任务使能和可选测距通信，通过后置 uavCheckSucceed=1。
@@ -1029,15 +1031,14 @@ bool UavOffboardFsm::isWaypointReached(const Waypoint & waypoint,
            std::abs(yaw_error) <= yaw_tolerance_;
 }
 
-// 当前航点读取：优先使用真实 PX4 位置反馈，若其超时则退回轨迹参考状态，二者都不可用时返回空。
+// 当前航点读取：只返回最新轨迹参考设定点(ruckig_state)，不使用真实 PX4 位置反馈，
+// 以保证下一段轨迹从已下发设定点连续衔接(flatness)；参考点超时或不可用时返回空。
 std::optional<UavOffboardFsm::Waypoint> UavOffboardFsm::currentWaypoint()
 {
     std::optional<sensor_msgs::msg::JointState> state_copy;
     {
         std::lock_guard<std::mutex> lock(latest_state_mutex_);
-        if (latest_actual_state_ && isFreshStateTime(last_actual_state_time_)) {
-            state_copy = latest_actual_state_;
-        } else if (latest_reference_state_ && isFreshStateTime(last_reference_state_time_)) {
+        if (latest_reference_state_ && isFreshStateTime(last_reference_state_time_)) {
             state_copy = latest_reference_state_;
         }
     }
@@ -1051,14 +1052,29 @@ std::optional<UavOffboardFsm::Waypoint> UavOffboardFsm::currentWaypoint()
         state_copy->position[3]};
 }
 
-// 获取当前位置或悬停默认点：有新鲜反馈时返回当前位置，否则返回起飞航点作为保底悬停目标。
+// 获取当前位置或悬停默认点：有新鲜参考设定点时返回它；否则回退到最近的里程碑点——
+// 转场结束后用 traj_last_setpoint，起飞后/兜底用 traj_first_setpoint(takeoff_waypoint_)。
 UavOffboardFsm::Waypoint UavOffboardFsm::currentOrHoverWaypoint()
 {
     const auto current = currentWaypoint();
     if (current) {
         return *current;
     }
+    if (transit_end_waypoint_valid_) {
+        return transit_end_waypoint_;
+    }
     return takeoff_waypoint_;
+}
+
+// 轨迹设定点转航点：取 px4 TrajectorySetpoint 的 position[0..2] 与 yaw 构造本状态机的 Waypoint。
+UavOffboardFsm::Waypoint
+UavOffboardFsm::waypointFromSetpoint(const px4_msgs::msg::TrajectorySetpoint & setpoint) const
+{
+    return Waypoint{
+        setpoint.position[0],
+        setpoint.position[1],
+        setpoint.position[2],
+        setpoint.yaw};
 }
 
 // 状态反馈新鲜度判断：时间戳必须有效，且距离当前时间不超过 state_feedback_timeout_s 参数。
@@ -1786,9 +1802,18 @@ void UavOffboardFsm::handleDistanceSensor(const px4_msgs::msg::DistanceSensor::S
 // {
     
 // }
+// 轨迹完成标志回调：缓存里程碑标志，并在起飞/转场完成时用对应的轨迹设定点更新起飞点与转场终点。
 void UavOffboardFsm::handleTrajCompleteFlag(const traj_offboard::msg::TrajCompleteFlag::SharedPtr msg)
 {
+    std::lock_guard<std::mutex> lock(fsm_mutex_);
     traj_complete_flag_ = *msg;
+    if (msg->take_off_completed) {
+        takeoff_waypoint_ = waypointFromSetpoint(msg->traj_first_setpoint);
+    }
+    if (msg->trajectory_completed) {
+        transit_end_waypoint_ = waypointFromSetpoint(msg->traj_last_setpoint);
+        transit_end_waypoint_valid_ = true;
+    }
 }
 
 // 单航点参数解析：要求参数正好包含 [x, y, z, yaw] 四个 double，格式错误时使用传入的 fallback。

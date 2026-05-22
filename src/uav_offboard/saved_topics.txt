@@ -1,0 +1,7 @@
+pub:
+/fmu/out/vehicle_attitude
+/fmu/out/vehicle_global_position
+/fmu/out/vehicle_local_position
+/fmu/out/vehicle_status
+/fmu/out/home_position
+/fmu/out/distance_sensor

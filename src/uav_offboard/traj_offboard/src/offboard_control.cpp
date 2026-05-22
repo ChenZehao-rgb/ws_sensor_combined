@@ -151,6 +151,9 @@ class OffboardControlBridge : public rclcpp::Node {
     std::size_t csv_transit_index_{0};
     bool csv_transit_complete_logged_{false};
     bool csv_transit_started_{false};
+    // Set when CSV transit finishes so the next trajectory request re-anchors
+    // the generator's internal state to the real vehicle position.
+    bool need_traj_reseed_{false};
 
     traj_offboard::msg::TrajCompleteFlag traj_complete_flag_{};
     
@@ -490,6 +493,7 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
     px4_msgs::msg::TrajectorySetpoint target_pose;
     uint64_t sent_generation = 0;
     bool sent_target_update = false;
+    bool sent_reset = false;
 
     while (!get_traj_setpoint_client_->service_is_ready()) {
         RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 3000,
@@ -506,6 +510,7 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
         target_pose = target_pose_;
         sent_generation = target_generation_;
         sent_target_update = sent_generation != forwarded_target_generation_;
+        sent_reset = need_traj_reseed_;
         pending_request_ = true;
     }
 
@@ -518,8 +523,9 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
     request->current_state = current_state;
     request->target = target_pose;
     request->update_target = sent_target_update;
+    request->reset_state = sent_reset;
 
-    auto result = get_traj_setpoint_client_->async_send_request(request, [this, sent_generation, sent_target_update, target_pose](rclcpp::Client<traj_offboard::srv::GetTrajectorySetpoint>::SharedFuture resp_fut) {
+    auto result = get_traj_setpoint_client_->async_send_request(request, [this, sent_generation, sent_target_update, sent_reset, target_pose](rclcpp::Client<traj_offboard::srv::GetTrajectorySetpoint>::SharedFuture resp_fut) {
         std::lock_guard<std::mutex> lock(bridge_mutex_);
         try {
             auto resp = resp_fut.get();
@@ -529,6 +535,12 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
                              "Trajectory service rejected request | generation=%" PRIu64 " update_target=%s",
                              sent_generation, sent_target_update ? "true" : "false");
                 return;
+            }
+            if (sent_reset) {
+                need_traj_reseed_ = false;
+                RCLCPP_INFO(this->get_logger(),
+                            "Trajectory generator re-anchored after CSV transit | target=(%.2f, %.2f, %.2f)",
+                            target_pose.position[0], target_pose.position[1], target_pose.position[2]);
             }
             if (sent_target_update && forwarded_target_generation_ < sent_generation) {
                 forwarded_target_generation_ = sent_generation;
@@ -570,6 +582,12 @@ void OffboardControlBridge::publish_csv_transit_setpoint() {
     csv_transit_index_ = csv_waypoints_.size();
     if (!csv_transit_complete_logged_ && isArrivedAtPosition(makeCsvSetpoint(csv_waypoints_.back()), POSITION_TOLERANCE)) {
         csv_transit_complete_logged_ = true;
+        {
+            // CSV transit bypassed the trajectory generator; force it to re-anchor
+            // on the real vehicle position at the next trajectory request.
+            std::lock_guard<std::mutex> lock(bridge_mutex_);
+            need_traj_reseed_ = true;
+        }
         traj_complete_flag_.trajectory_completed = true;
         traj_complete_flag_.traj_last_setpoint.position[0] = last_cmd_.position[0];
         traj_complete_flag_.traj_last_setpoint.position[1] = last_cmd_.position[1];
@@ -720,13 +738,24 @@ void OffboardControlBridge::controlLoopOnTimer() {
             break;
         }
         case FlightState::TRAJECTORY_FOLLOWING: {
-            std::lock_guard<std::mutex> lock(bridge_mutex_);
-            if (offboard_state_.data == "TRANSIT_TO_AREA" && !csv_waypoints_.empty() && !csv_transit_complete_logged_) {
+            // Snapshot shared state under a short lock; the publish helpers below
+            // re-acquire bridge_mutex_ internally, so the lock must NOT be held
+            // across them (bridge_mutex_ is non-recursive -> self-deadlock).
+            std::string current_offboard_state;
+            bool has_target_now = false;
+            bool csv_transit_done = false;
+            {
+                std::lock_guard<std::mutex> lock(bridge_mutex_);
+                current_offboard_state = offboard_state_.data;
+                has_target_now = has_target_;
+                csv_transit_done = csv_transit_complete_logged_;
+            }
+            if (current_offboard_state == "TRANSIT_TO_AREA" && !csv_waypoints_.empty() && !csv_transit_done) {
                 publish_offboard_control_mode_pv();
                 publish_csv_transit_setpoint();
                 break;
             }
-            if(!has_target_) {
+            if(!has_target_now) {
                 publish_offboard_control_mode_pva();
                 if (last_cmd_time_.nanoseconds() != 0) {
                     RCLCPP_DEBUG_THROTTLE(get_logger(), *this->get_clock(), 5000,

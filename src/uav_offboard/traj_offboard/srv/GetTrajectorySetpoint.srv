@@ -2,6 +2,9 @@
 px4_msgs/TrajectorySetpoint current_state
 px4_msgs/TrajectorySetpoint target
 bool update_target
+# Re-anchor the generator's internal current state to current_state.
+# Set after the bridge drove the vehicle outside the generator (e.g. CSV transit).
+bool reset_state
 ---
 px4_msgs/TrajectorySetpoint trajectory_setpoint
 bool success
