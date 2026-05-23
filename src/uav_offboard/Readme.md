@@ -407,3 +407,7 @@ cd ros2_xmy
 source fast(tab)
 ros2 run d435i_image_compressor image_compressor_node
 
+Terminal with scp/rsync
+scp -r ./myfolder user@host:/remote/path/
+example:
+scp -r ws_sensor_combined/src/uav_offboard/uav_offboard_fsm/ neu@192.168.4.2:/home/neu/manipulator_ws/src/uav_offboard

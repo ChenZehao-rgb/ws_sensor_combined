@@ -1,0 +1,13 @@
+from launch import LaunchDescription
+from launch_ros.actions import Node
+
+def generate_launch_description():
+    return LaunchDescription([
+        Node(
+            package='vehicle_state_forward',
+            executable='vehicle_state_forward_node',
+            name='vehicle_state_forward_node',
+            output='screen',
+            emulate_tty=True
+        )
+    ])
