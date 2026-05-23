@@ -135,10 +135,11 @@ class OffboardControlBridge : public rclcpp::Node {
     uint64_t target_generation_{0};
     uint64_t forwarded_target_generation_{0};
     std::mutex bridge_mutex_;
-    bool use_takeoff_on_ground_{true};
+    bool use_takeoff_on_ground_{false};
     bool has_local_position_{false};
     bool has_vehicle_status_{false};
     bool px4_offboard_active_{false};
+    bool px4_offboard_disabled;
     bool manual_hover_setpoint_valid_{false};
     px4_msgs::msg::TrajectorySetpoint manual_hover_setpoint_{};
     double latest_heading_yaw_enu_{0.0};
@@ -286,7 +287,7 @@ void OffboardControlBridge::VehicleStatusCallback(const px4_msgs::msg::VehicleSt
     has_vehicle_status_ = true;
     px4_offboard_active_ =
         msg->nav_state == px4_msgs::msg::VehicleStatus::NAVIGATION_STATE_OFFBOARD;
-
+    // px4_offboard_disabled = msg->nav_state == px4_msgs::msg::VehicleStatus::NAVIGATION_STATE_MANUAL;
     if (use_takeoff_on_ground_) {
         return;
     }
@@ -462,7 +463,7 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makeCsvSetpoint(const C
     px4_msgs::msg::TrajectorySetpoint setpoint{};
     setpoint.position[0] = static_cast<float>(waypoint.y) - csv_transit_first_setpoint_.position[1];
     setpoint.position[1] = static_cast<float>(waypoint.x) - csv_transit_first_setpoint_.position[0];
-    setpoint.position[2] = -static_cast<float>(waypoint.z);
+    setpoint.position[2] = -static_cast<float>(waypoint.z) -7;  
     setpoint.velocity[0] = static_cast<float>(waypoint.vy);
     setpoint.velocity[1] = static_cast<float>(waypoint.vx);
     setpoint.velocity[2] = -static_cast<float>(waypoint.vz);
@@ -473,7 +474,13 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makeCsvSetpoint(const C
 px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::publishConvertedSetpoint(px4_msgs::msg::TrajectorySetpoint enu_setpoint) {
     enu_setpoint.timestamp = this->get_clock()->now().nanoseconds() / 1000;
     auto ned_setpoint = convertENUToNED(enu_setpoint);
-    traj_setpoint_pub_->publish(ned_setpoint);
+    if(px4_offboard_active_){
+        traj_setpoint_pub_->publish(ned_setpoint);
+    }
+    else {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+                             "PX4 OFFBOARD inactive | not publishing setpoint");
+    }
     return enu_setpoint;
 }
 

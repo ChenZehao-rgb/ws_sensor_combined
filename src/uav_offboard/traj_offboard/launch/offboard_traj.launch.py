@@ -45,6 +45,7 @@ def generate_launch_description() -> LaunchDescription:
         '/fmu/out/vehicle_status',
         '/fmu/out/home_position',
         '/fmu/out/distance_sensor',
+        '/fmu/out/vehicle_status_v1',
         '/fmu/in/trajectory_setpoint',
         '/fmu/in/offboard_control_mode',
         '/fmu/in/vehicle_command',

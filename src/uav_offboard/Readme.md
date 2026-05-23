@@ -398,3 +398,12 @@ ros2 run uav_offboard_fsm uav_keyboard_control_node
 ```bash
 param set NAV_DLL_ACT 0
 ```
+
+
+camera launch
+ros2 launch realsense2_camera rs_launch.py     depth_module.depth_profile:=1280x720x15     rgb_camera.color_profile:=1280x720x15    align_depth.enable:=true     enable_color:=true     enable_depth:=true     enable_accel:=true     enable_gyro:=true      unite_imu_method:=1
+
+cd ros2_xmy
+source fast(tab)
+ros2 run d435i_image_compressor image_compressor_node
+
