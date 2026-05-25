@@ -1,0 +1,17 @@
+offboard_control_bridge:
+  ros__parameters:
+    # CSV 航点文件绝对路径。CSV 列格式: index,x,y,z,vx,vy,vz (NED, m, m/s)
+    waypoints_csv_path: "/home/sia/ws_sensor_combined/src/uav_offboard/waypoints.csv"
+
+    # CSV 航点流推送频率 (Hz)
+    csv_stream_rate_hz: 50.0
+
+    # CSV 没有 yaw 列时使用的默认 yaw (rad)
+    csv_default_yaw: 0.0
+
+    # 生成 CSV 时无人机所在的 home 位置(本地 NED 坐标, 单位 m)。
+    # 顺序: [x_north, y_east, z_down]。由用户在每次起飞前手动填写,
+    # CSV 中每个 waypoint 都会减去该值, 使轨迹相对当前起飞点。
+    # 例如若 CSV 是在距 PX4 local origin 北 -0.32m, 东 9.26m, 下 -12.99m
+    # 处生成的, 这里就填 [-0.32, 9.26, -12.99]。
+    uav_home_position_local_ned: [0.0, 0.0, 0.0]

@@ -1,4 +1,4 @@
-# 开发环境安装 Ubuntu22.04 + ROS2 Humble + PX4 1.16
+# 开发环境安装 Ubuntu 22.04 + ROS 2 Humble + PX4 1.16
 
 ## 1. ROS 2 安装
 
@@ -77,21 +77,11 @@ sudo reboot
 
 ## 4. 安装 Micro-XRCE-DDS-Agent
 
+克隆仓库：
+
 ```bash
-git clone -b v2.4.2 https://github.com/eProsima/Micro-XRCE-DDS-Agent.git
+git clone -b v2.4.3 https://github.com/eProsima/Micro-XRCE-DDS-Agent.git
 cd Micro-XRCE-DDS-Agent
-```
-
-将目录下 `CMakeLists.txt` 中第 98/99 行改为：
-
-```cmake
-set(_fastdds_version 2.13)
-set(_fastdds_tag 2.13.x)
-```
-
-然后编译安装：
-
-```bash
 mkdir build
 cd build
 cmake ..
@@ -102,9 +92,7 @@ sudo ldconfig /usr/local/lib/
 
 ## 5. 运行仿真
 
-说明：
-
-- 在虚拟机下，需要关闭加速 3D 图形。
+说明：在虚拟机下，需要关闭加速 3D 图形。
 
 首先启动 ROS Agent：
 
@@ -134,13 +122,14 @@ HEADLESS=1 make px4_sitl gz_x500
 sudo apt install ros-humble-plotjuggler-ros
 ```
 
-在 ROS 2 中启动：
+在 ROS 2 中启动，需要先 source 编译环境：
 
-需要先
 ```bash
 source install/setup.bash
 ```
-来获取编译环境；然后再
+
+然后运行：
+
 ```bash
 ros2 run plotjuggler plotjuggler
 ```
@@ -198,7 +187,7 @@ sudo make install
 
 ## 2. ROS 2 项目环境
 
-### 2.1 跳转问题
+### 2.1 代码跳转问题
 
 #### 方法一：合并 `compile_commands.json`
 
@@ -279,7 +268,7 @@ python3 tools/merge_compile_commands.py
 
 删除 `.vscode` 目录下的所有文件，然后重启 VS Code。
 
-## 3. UORB Bridged to ROS 2（uORB 参数使用指南）
+## 3. uORB Bridged to ROS 2（uORB 参数使用指南）
 
 ### 3.1 `msg` 版本需一致
 
@@ -289,7 +278,8 @@ python3 tools/merge_compile_commands.py
 
 #### 3.2.1 `/fmu/in/vehicle_command`
 
-**ROS 2 消息类型**  
+**ROS 2 消息类型**
+
 `px4_msgs::msg::VehicleCommand`（ROS 2 → PX4，写入 uORB `vehicle_command`）
 
 **使用实例**：
@@ -302,14 +292,14 @@ publish_vehicle_command(
 );
 ```
 
-**参数语义（以 `MAV_CMD_DO_SET_MODE` 为例）**：
+**参数语义**（以 `MAV_CMD_DO_SET_MODE` 为例）：
 
 - **Command**：`VEHICLE_CMD_DO_SET_MODE`（MAV_CMD = 176）
-- **param1 = base_mode**：`MAV_MODE_FLAG` 位掩码  [CMD说明](https://mavlink.io/en/messages/common.html#MAV_CMD_DO_SET_MODE)
-- **param2 = custom_mode**：飞控自定义模式，在 PX4 中对应 `main_mode` [MAV_MODE_FLAG](https://mavlink.io/en/messages/common.html#MAV_MODE_FLAG)
-- **param3 = custom_submode**：可选，PX4 某些主模式下才会使用 [custom param](https://github.com/mavlink/MAVSDK/blob/ce6b7186d837b1ab5e9b23bb9be72aec28899630/src/mavsdk/core/px4_custom_mode.h)
+- **param1 = base_mode**：`MAV_MODE_FLAG` 位掩码 — [CMD 说明](https://mavlink.io/en/messages/common.html#MAV_CMD_DO_SET_MODE)
+- **param2 = custom_mode**：飞控自定义模式，在 PX4 中对应 `main_mode` — [MAV_MODE_FLAG](https://mavlink.io/en/messages/common.html#MAV_MODE_FLAG)
+- **param3 = custom_submode**：可选，PX4 某些主模式下才会使用 — [custom param](https://github.com/mavlink/MAVSDK/blob/ce6b7186d837b1ab5e9b23bb9be72aec28899630/src/mavsdk/core/px4_custom_mode.h)
 
-说明：以上为 MAVLink 官方定义；标准模式另有 `MAV_CMD_DO_SET_STANDARD_MODE`，而自定义模式必须使用 `MAV_CMD_DO_SET_MODE`。 [mavlink.io+1](https://mavlink.io/en/services/standard_modes.html?utm_source=chatgpt.com)
+说明：以上为 MAVLink 官方定义；标准模式另有 `MAV_CMD_DO_SET_STANDARD_MODE`，而自定义模式必须使用 `MAV_CMD_DO_SET_MODE`。参考：[mavlink.io](https://mavlink.io/en/services/standard_modes.html)
 
 #### 3.2.2 `/fmu/out/home_position`
 
@@ -331,11 +321,13 @@ publish_vehicle_command(
 
 ### 4.1 准备工作
 
-先按第 1 节安装 Ruckig 库环境；这是底层的轨迹规划库。
+先按本节第 1 部分安装 Ruckig 库环境（底层的轨迹规划库）。
 
-然后将px4_msg库git到src目录下，并切换到1.16分支
+将 `px4_msgs` 库 clone 到 `src` 目录下，并切换到 1.16 分支：
+
 ```bash
 git clone https://github.com/PX4/px4_msgs.git
+cd px4_msgs
 git checkout release/1.16
 ```
 
@@ -348,24 +340,25 @@ colcon build
 
 ### 4.2 启动终端
 
-**Terminal 1**
+**Terminal 1 — Micro-XRCE-DDS Agent**
 
 ```bash
 MicroXRCEAgent udp4 -p 8888
 ```
 
 与实际飞控连接可以使用：
+
 ```bash
 MicroXRCEAgent serial --dev /dev/ttyUSB0 -b 921600
 ```
 
-**Terminal 2**
+**Terminal 2 — PX4 SITL**
 
 ```bash
 make px4_sitl gz_x500
 ```
 
-**Terminal 3-规划器节点**
+**Terminal 3 — 规划器节点**
 
 ```bash
 cd /ws_sensor_combined
@@ -373,7 +366,7 @@ source install/setup.bash
 ros2 launch traj_offboard offboard_traj.launch.py
 ```
 
-**Terminal 4-状态机**
+**Terminal 4 — 状态机**
 
 ```bash
 cd /ws_sensor_combined
@@ -381,7 +374,7 @@ source install/setup.bash
 ros2 launch uav_offboard_fsm uav_offboard_fsm.launch.py
 ```
 
-**Terminal 5-按键控制**
+**Terminal 5 — 按键控制**
 
 ```bash
 cd /ws_sensor_combined
@@ -389,25 +382,92 @@ source install/setup.bash
 ros2 run uav_offboard_fsm uav_keyboard_control_node
 ```
 
-**Terminal 6**
+**Terminal 6 — 地面站**
 
 打开地面站。
 
-注意：需打开地面站才能ready to fly，才能正确切到offboard模式；
-如果使用jetson，没有地面站的情况下，需要在 PX4 的 pxh> 终端里设置：
+注意：
+
+- 需打开地面站才能 ready to fly，才能正确切到 offboard 模式。
+- 如果使用 Jetson，没有地面站的情况下，需要在 PX4 的 `pxh>` 终端里设置：
+
+  ```bash
+  param set NAV_DLL_ACT 0
+  ```
+
+---
+
+# 实机部署（Jetson）
+
+## 1. Fast DDS Discovery Server
+
+启动 server：
+
 ```bash
-param set NAV_DLL_ACT 0
+fast-discovery-server -i 0 -l 192.168.4.2 -p 11811
 ```
 
+## 2. Micro-XRCE-DDS Agent
 
-camera launch
-ros2 launch realsense2_camera rs_launch.py     depth_module.depth_profile:=1280x720x15     rgb_camera.color_profile:=1280x720x15    align_depth.enable:=true     enable_color:=true     enable_depth:=true     enable_accel:=true     enable_gyro:=true      unite_imu_method:=1
+启动 agent（串口连接飞控）：
 
+```bash
+MicroXRCEAgent serial --dev /dev/ttyTHS1 -b 921600 -c px4_participant.xml
+```
+
+## 3. RealSense 相机启动
+
+```bash
+ros2 launch realsense2_camera rs_launch.py \
+  depth_module.depth_profile:=1280x720x15 \
+  rgb_camera.color_profile:=1280x720x15 \
+  align_depth.enable:=true \
+  enable_color:=true \
+  enable_depth:=true \
+  enable_accel:=true \
+  enable_gyro:=true \
+  unite_imu_method:=1
+```
+
+## 4. 图像压缩节点
+
+```bash
 cd ros2_xmy
-source fast(tab)
+source fast<TAB>   # 自动补全 fast-dds 环境
 ros2 run d435i_image_compressor image_compressor_node
+```
 
-Terminal with scp/rsync
+## 5. 文件传输（scp / rsync）
+
+通用语法：
+
+```bash
 scp -r ./myfolder user@host:/remote/path/
-example:
+```
+
+示例：
+
+```bash
 scp -r ws_sensor_combined/src/uav_offboard/uav_offboard_fsm/ neu@192.168.4.2:/home/neu/manipulator_ws/src/uav_offboard
+scp -r ws_sensor_combined/src/uav_offboard/traj_offboard/ sia@10.225.115.210:/home/sia/ws_sensor_combined/src/uav_offboard
+```
+
+## 6. ROS Bag 修复
+
+重建索引：
+
+```bash
+ros2 bag reindex /path/to/bag_folder
+```
+
+如果 bag 文件损坏，先用 sqlite 的 `.recover` 命令修复数据库：
+
+```bash
+sqlite3 online_traj_19700101_080654_0.db3 ".recover" | sqlite3 recovered.db3
+```
+
+然后再重建索引：
+
+```bash
+ros2 bag reindex /path/to/bag_folder -s sqlite3
+```

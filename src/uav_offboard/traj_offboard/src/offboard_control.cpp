@@ -25,6 +25,7 @@
 
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
+#include <array>
 #include <cinttypes>
 #include <cstdint>
 #include <cmath>
@@ -52,9 +53,34 @@ static inline void quat2RPY(const geometry_msgs::msg::Quaternion &quat, double &
 class OffboardControlBridge : public rclcpp::Node {
   public:
     OffboardControlBridge() : rclcpp::Node("offboard_control_bridge") {
+        waypoints_csv_path_ = this->declare_parameter<std::string>(
+            "waypoints_csv_path", waypoints_csv_path_);
+        csv_stream_rate_hz_ = this->declare_parameter<double>(
+            "csv_stream_rate_hz", csv_stream_rate_hz_);
+        csv_default_yaw_ = this->declare_parameter<double>(
+            "csv_default_yaw", csv_default_yaw_);
+        const auto home_param = this->declare_parameter<std::vector<double>>(
+            "uav_home_position_local_ned",
+            std::vector<double>{uav_home_position_local_ned_[0],
+                                uav_home_position_local_ned_[1],
+                                uav_home_position_local_ned_[2]});
+        if (home_param.size() != 3) {
+            RCLCPP_ERROR(get_logger(),
+                         "uav_home_position_local_ned must have 3 entries [x_north, y_east, z_down], got %zu; using zeros",
+                         home_param.size());
+        } else {
+            uav_home_position_local_ned_[0] = home_param[0];
+            uav_home_position_local_ned_[1] = home_param[1];
+            uav_home_position_local_ned_[2] = home_param[2];
+        }
+        RCLCPP_INFO(get_logger(),
+                    "Config | csv=%s rate=%.2fHz default_yaw=%.2f home_ned=(%.2f, %.2f, %.2f)",
+                    waypoints_csv_path_.c_str(), csv_stream_rate_hz_, csv_default_yaw_,
+                    uav_home_position_local_ned_[0], uav_home_position_local_ned_[1],
+                    uav_home_position_local_ned_[2]);
+
         csv_waypoints_ = loadCsvWaypoints(waypoints_csv_path_);
         if (!csv_waypoints_.empty()) {
-            csv_transit_first_setpoint_ = getCsvFirstSetpoint();
             takeoff_setpoint_ = makeCsvSetpoint(csv_waypoints_.front());
             RCLCPP_INFO(get_logger(),
                         "CSV waypoints loaded | count=%zu path=%s first=(%.2f, %.2f, %.2f, yaw %.2f) velocity=(%.2f, %.2f, %.2f)",
@@ -129,7 +155,12 @@ class OffboardControlBridge : public rclcpp::Node {
     px4_msgs::msg::VehicleStatus vehicle_status_;
     std_msgs::msg::String offboard_state_;
     px4_msgs::msg::TrajectorySetpoint target_pose_;
-    px4_msgs::msg::TrajectorySetpoint takeoff_setpoint_{}, csv_transit_first_setpoint_{};
+    px4_msgs::msg::TrajectorySetpoint takeoff_setpoint_{};
+    // Local NED home position at the time the CSV waypoints were recorded.
+    // Subtracted from each CSV waypoint so the trajectory is re-anchored on the
+    // current takeoff point's PX4 local origin. Filled from ROS parameter
+    // uav_home_position_local_ned in offboard_control.yaml.
+    std::array<double, 3> uav_home_position_local_ned_{0.0, 0.0, 0.0};
     bool has_target_{false};
     bool pending_request_{false};
     uint64_t target_generation_{0};
@@ -210,7 +241,6 @@ class OffboardControlBridge : public rclcpp::Node {
     px4_msgs::msg::TrajectorySetpoint convertENUToNED(const px4_msgs::msg::TrajectorySetpoint &enu_setpoint) const;
     px4_msgs::msg::TrajectorySetpoint makePositionHoldSetpoint(float x, float y, float z, float yaw) const;
     px4_msgs::msg::TrajectorySetpoint makeCurrentLocalPositionHoldSetpoint() const;
-    px4_msgs::msg::TrajectorySetpoint getCsvFirstSetpoint() const;
     px4_msgs::msg::TrajectorySetpoint makeCsvSetpoint(const CsvWaypoint & waypoint) const;
     px4_msgs::msg::TrajectorySetpoint publishConvertedSetpoint(px4_msgs::msg::TrajectorySetpoint enu_setpoint);
     void publishManualHoverSetpoint();
@@ -449,21 +479,19 @@ void OffboardControlBridge::captureManualHoverSetpoint() {
     publishManualHoverSetpoint();
 }
 
-px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::getCsvFirstSetpoint() const {
-    // csv waypoints are NED relative to local origin. Convert to ENU and correct to Zero.
-    px4_msgs::msg::TrajectorySetpoint setpoint{};
-    setpoint.position[0] = csv_waypoints_.front().x;
-    setpoint.position[1] = csv_waypoints_.front().y;
-    setpoint.position[2] = csv_waypoints_.front().z;
-    return setpoint;
-}
-
 px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makeCsvSetpoint(const CsvWaypoint & waypoint) const {
-    // csv waypoints are NED relative to local origin. Convert to ENU and correct to Zero.
+    // CSV waypoints are NED relative to the local origin at the moment of
+    // recording. Subtract the configured home position (NED) so the trajectory
+    // is anchored on the current takeoff point, then convert NED -> ENU for
+    // publishConvertedSetpoint (which will flip back to NED for PX4).
+    const double dx_ned = waypoint.x - uav_home_position_local_ned_[0];
+    const double dy_ned = waypoint.y - uav_home_position_local_ned_[1];
+    const double dz_ned = waypoint.z - uav_home_position_local_ned_[2];
+
     px4_msgs::msg::TrajectorySetpoint setpoint{};
-    setpoint.position[0] = static_cast<float>(waypoint.y) - csv_transit_first_setpoint_.position[1];
-    setpoint.position[1] = static_cast<float>(waypoint.x) - csv_transit_first_setpoint_.position[0];
-    setpoint.position[2] = -static_cast<float>(waypoint.z) -7;  
+    setpoint.position[0] = static_cast<float>(dy_ned);
+    setpoint.position[1] = static_cast<float>(dx_ned);
+    setpoint.position[2] = -static_cast<float>(dz_ned);
     setpoint.velocity[0] = static_cast<float>(waypoint.vy);
     setpoint.velocity[1] = static_cast<float>(waypoint.vx);
     setpoint.velocity[2] = -static_cast<float>(waypoint.vz);
@@ -686,6 +714,10 @@ void OffboardControlBridge::controlLoopOnTimer() {
             }
             // no offboard switched
             if (!px4_offboard_active_) {
+                traj_complete_flag_.offboard_mode_active = false;
+                traj_complete_flag_.take_off_completed = false;
+                traj_complete_flag_.trajectory_completed = false;
+                    traj_completed_flag_pub_->publish(traj_complete_flag_);
                 if (has_local_position_) {
                     last_cmd_ = publishConvertedSetpoint(makeCurrentLocalPositionHoldSetpoint());
                     last_cmd_time_ = this->now();
@@ -702,6 +734,10 @@ void OffboardControlBridge::controlLoopOnTimer() {
             } else { // else, manual_hover_setpoint_ is built, and pub every circle
                 if (!manual_hover_setpoint_valid_ && has_local_position_) {
                     captureManualHoverSetpoint();
+                    traj_complete_flag_.offboard_mode_active = true;
+                    traj_complete_flag_.take_off_completed = false;
+                    traj_complete_flag_.trajectory_completed = false;
+                    traj_completed_flag_pub_->publish(traj_complete_flag_);
                 }
                 publishManualHoverSetpoint();
                 RCLCPP_DEBUG_THROTTLE(get_logger(), *this->get_clock(), 5000,
@@ -723,6 +759,7 @@ void OffboardControlBridge::controlLoopOnTimer() {
             publish_takeoff_setpoint(takeoff_setpoint_);
             if (isArrivedAtPosition(takeoff_setpoint_, POSITION_TOLERANCE)) {
                 takeoff_complete_ = true;
+                traj_complete_flag_.offboard_mode_active = true;
                 traj_complete_flag_.take_off_completed = true;
                 traj_complete_flag_.trajectory_completed = false;
                 traj_complete_flag_.traj_first_setpoint.position[0] = last_cmd_.position[0];

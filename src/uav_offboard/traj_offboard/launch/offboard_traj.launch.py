@@ -3,6 +3,7 @@
 from datetime import datetime
 from pathlib import Path
 
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, LogInfo
 from launch.conditions import IfCondition
@@ -29,6 +30,12 @@ def generate_launch_description() -> LaunchDescription:
     record_bag = LaunchConfiguration('record_bag')
     log_level = LaunchConfiguration('log_level')
     use_takeoff_on_ground = LaunchConfiguration('use_takeoff_on_ground')
+    params_file = LaunchConfiguration('params_file')
+    default_params_file = (
+        Path(get_package_share_directory('traj_offboard'))
+        / 'config'
+        / 'offboard_control.yaml'
+    )
     ros_args = ['--ros-args', '--log-level', log_level]
 
     topics_to_record = [
@@ -58,9 +65,6 @@ def generate_launch_description() -> LaunchDescription:
         name='offboard_control_bridge',
         output='screen',
         emulate_tty=True,
-        parameters=[{
-            'use_takeoff_on_ground': ParameterValue(use_takeoff_on_ground, value_type=bool),
-        }],
         arguments=ros_args,
     )
 
@@ -111,6 +115,11 @@ def generate_launch_description() -> LaunchDescription:
             'use_takeoff_on_ground',
             default_value='true',
             description='true for bridge-controlled ground takeoff; false for pilot takeoff then manual PX4 OFFBOARD hover handoff'),
+        DeclareLaunchArgument(
+            'params_file',
+            default_value=str(default_params_file),
+            description='YAML parameter file for offboard_control_bridge (csv path, home position, etc.)'),
+        LogInfo(msg=['traj_offboard: params_file=', params_file]),
         LogInfo(msg='traj_offboard: starting offboard bridge and online trajectory generator'),
         LogInfo(msg='traj_offboard: start FSM with uav_offboard_fsm.launch.py and keyboard node in separate terminals'),
         LogInfo(msg=f'rosbag: output={bag_output}', condition=IfCondition(record_bag)),

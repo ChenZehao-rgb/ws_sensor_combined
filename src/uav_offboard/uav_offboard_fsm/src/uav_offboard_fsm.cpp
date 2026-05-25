@@ -994,7 +994,7 @@ void UavOffboardFsm::sendActiveTarget()
 bool UavOffboardFsm::isSelfCheckOK()
 {
     return (!require_distance_sensor_ || hasFreshDistanceSensor()) &&
-           hasFreshVehicleLocalPosition() && hasValidHomePosition();
+           hasFreshVehicleLocalPosition() && hasValidHomePosition() && traj_complete_flag_.offboard_mode_active;
 }
 
 // 起飞完成判断：读取当前无人机位置，并检查是否已经到达 takeoff_waypoint 参数指定的起飞航点。
