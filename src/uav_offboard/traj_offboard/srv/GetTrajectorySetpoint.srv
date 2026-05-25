@@ -5,6 +5,8 @@ bool update_target
 # Re-anchor the generator's internal current state to current_state.
 # Set after the bridge drove the vehicle outside the generator (e.g. CSV transit).
 bool reset_state
+# 当前段的 Ruckig 平动速度限制覆盖（x/y/z）。任一分量 <= 0 表示用默认 VEL_LIMIT。
+float64[3] max_velocity_xyz
 ---
 px4_msgs/TrajectorySetpoint trajectory_setpoint
 bool success

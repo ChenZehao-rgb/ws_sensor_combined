@@ -145,6 +145,13 @@ private:
         ruckigInput_.target_velocity[id] = targ_.velocity[id];
         ruckigInput_.target_acceleration[id] = targ_.effort[id];
       }
+      // 应用本段平动速度上限覆盖：分量 >0 时替换默认 VEL_LIMIT；否则恢复默认。yaw 始终保持默认。
+      using traj_generator::VEL_LIMIT;
+      for (std::size_t id = 0; id < 3; id++) {
+        const double override_v = request->max_velocity_xyz[id];
+        ruckigInput_.max_velocity[id] = (override_v > 0.0) ? override_v : VEL_LIMIT[id];
+      }
+      ruckigInput_.max_velocity[3] = VEL_LIMIT[3];
 #endif
     }
     if (!trajGenerate()) {

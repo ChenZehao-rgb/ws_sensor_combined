@@ -239,9 +239,12 @@ class UavOffboardFsm : public rclcpp::Node {
     double state_feedback_timeout_s_{1.0};
     double search_yaw_offset_rad_{0.35};
     double search_lateral_offset_m_{0.4};
-    double approach_distance_m_{1.0};
     double approach_target_distance_m_{0.7};
     double approach_distance_tolerance_m_{0.1};
+    // 无测距传感器（仿真）时允许的最大体系前向位移（也作为有测距时的安全上限）。
+    double approach_max_travel_m_{3.0};
+    // 靠近段期望的体系前向速度（仅 x 轴），y、z 方向恒为 0。
+    double approach_speed_m_s_{0.1};
     double retreat_distance_m_{1.0};
     double sample_adjust_forward_m_{0.2};
     double sample_adjust_right_m_{0.0};
@@ -249,6 +252,8 @@ class UavOffboardFsm : public rclcpp::Node {
     double sample_adjust_yaw_offset_rad_{0.0};
     std::array<double, 3> target_velocity_{0.0, 0.0, 0.0};
     std::array<double, 3> target_acceleration_{0.0, 0.0, 0.0};
+    // 当前段下发给 Ruckig 的平动速度上限覆盖；分量 <=0 表示让 OTG 沿用 VEL_LIMIT 默认。
+    std::array<double, 3> target_max_velocity_xyz_{0.0, 0.0, 0.0};
     double target_yawspeed_{0.0};
     double heading_yaw_offset_rad_{1.5707963267948966};
     int distance_sensor_min_signal_quality_{1};
@@ -407,6 +412,9 @@ void UavOffboardFsm::controlLoopOnTimer()
 void UavOffboardFsm::onStateEntry(ControlState state)
 {
     clearActiveTarget();
+    // 默认航点末端速度为 0、不覆盖 Ruckig 速度上限；APPROACH_PLANT 在 generateApproachWaypoints 中重置这两项。
+    target_velocity_ = {0.0, 0.0, 0.0};
+    target_max_velocity_xyz_ = {0.0, 0.0, 0.0};
     RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "FSM state -> %s" LOG_COLOR_RESET, stateToString(state).c_str());
 
     switch (state) {
@@ -685,6 +693,8 @@ void UavOffboardFsm::handleApproachPlant()
 }
 
 // 接近完成保持状态：无人机保持在植株附近，等待总状态机下发 UAV_POSE_ADAP 并选择采样微调模式。
+// 进入后立刻下发一个以当前位姿为目标、末端速度为 0 的悬停 set_target，
+// 覆盖 APPROACH 段残留在 Ruckig 内的 0.1 m/s 末端速度，避免飞机继续向前漂。
 void UavOffboardFsm::handleUavPreHold()
 {
     if (!approach_completed_) {
@@ -692,6 +702,18 @@ void UavOffboardFsm::handleUavPreHold()
                              "UAV_PRE_HOLD blocked | approach is not complete");
         transitionTo(ControlState::UAV_ARRIVED_AERA);
         return;
+    }
+
+    if (!active_target_) {
+        // target_velocity_ 与 target_max_velocity_xyz_ 已在 onStateEntry 重置为 0，
+        // 这里只需把当前位姿设为目标位置即可形成悬停指令。
+        setActiveTarget(currentOrHoverWaypoint());
+        RCLCPP_INFO(get_logger(),
+                    "UAV_PRE_HOLD hover target | target=(%.2f, %.2f, %.2f, yaw %.2f) endpoint_vel=0",
+                    active_target_->x, active_target_->y, active_target_->z, active_target_->yaw);
+    }
+    if (active_target_ && !active_target_sent_ && !target_request_pending_) {
+        sendActiveTarget();
     }
 
     RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
@@ -963,6 +985,11 @@ void UavOffboardFsm::sendActiveTarget()
         static_cast<float>(target_acceleration_[2])};
     request->target.yaw = static_cast<float>(active_target_->yaw);
     request->target.yawspeed = static_cast<float>(target_yawspeed_);
+    request->max_velocity_xyz = {
+        target_max_velocity_xyz_[0],
+        target_max_velocity_xyz_[1],
+        target_max_velocity_xyz_[2],
+    };
 
     const auto target = *active_target_;
     target_request_pending_ = true;
@@ -1127,21 +1154,49 @@ void UavOffboardFsm::generateSearchAdjustWaypoints()
     search_waypoints_.push_back({base.x, base.y, base.z, base.yaw});
 }
 
-// 生成靠近航点：根据当前测距结果计算前进距离，目标是接近到 approach_target_distance_m 附近。
+// 生成靠近航点：仅沿体系 x 轴慢速前进（y、z 速度为 0），由测距传感器判定到达 approach_target_distance_m。
+// - 有新鲜测距：前进距离 = clamp(latest - target, 0, approach_max_travel_m_)；handleApproachPlant 内监测距离传感器以提前终止。
+// - 无测距（仿真）：前进距离 = approach_max_travel_m_(默认 3m)，到达航点即视为完成。
+// 同时把 target_velocity_ 设为体系 x 方向的 approach_speed_m_s_，体系 y、z 分量为 0。
 void UavOffboardFsm::generateApproachWaypoints()
 {
     const auto base = currentOrHoverWaypoint();
-    double travel_distance = approach_distance_m_;
-    if (latest_distance_m_) {
-        travel_distance =
-            std::clamp(*latest_distance_m_ - approach_target_distance_m_, 0.0, approach_distance_m_);
+    approach_waypoints_.clear();
+
+    const bool sensor_ok = hasFreshDistanceSensor();
+    double travel_distance = approach_max_travel_m_;
+    if (sensor_ok) {
+        travel_distance = std::clamp(*latest_distance_m_ - approach_target_distance_m_,
+                                     0.0, approach_max_travel_m_);
+        if (travel_distance <= approach_distance_tolerance_m_) {
+            RCLCPP_INFO(get_logger(),
+                        "Approach skip | distance_sensor=%.2fm already within target=%.2fm (tol=%.2fm)",
+                        *latest_distance_m_, approach_target_distance_m_,
+                        approach_distance_tolerance_m_);
+            target_velocity_ = {0.0, 0.0, 0.0};
+            return;
+        }
+        RCLCPP_INFO(get_logger(),
+                    "Approach plan | source=distance_sensor latest=%.2fm target=%.2fm travel=%.2fm speed=%.2fm/s",
+                    *latest_distance_m_, approach_target_distance_m_, travel_distance,
+                    approach_speed_m_s_);
+    } else {
+        RCLCPP_INFO(get_logger(),
+                    "Approach plan | source=simulation (no distance sensor) travel=%.2fm speed=%.2fm/s",
+                    travel_distance, approach_speed_m_s_);
     }
 
-    approach_waypoints_.clear();
-    if (travel_distance <= approach_distance_tolerance_m_) {
-        return;
-    }
     approach_waypoints_.push_back(offsetBodyFrame(base, travel_distance, 0.0));
+
+    // 末端速度设为 0：1) 3m 是安全上限，到点必须能立刻刹车；2) Ruckig 要求 |target_v[i]| < max_v[i]，
+    // 若末端速度等于上限会触发 ErrorInvalidInput；巡航段的 0.1 m/s 由 target_max_velocity_xyz_ 单独约束。
+    target_velocity_ = {0.0, 0.0, 0.0};
+    // Ruckig 平动速度 per-axis 上限压到 approach_speed_m_s_，控制巡航速度。
+    target_max_velocity_xyz_ = {
+        approach_speed_m_s_,
+        approach_speed_m_s_,
+        approach_speed_m_s_,
+    };
 }
 
 // 生成采样微调航点：以当前位置为基准，按参数配置的机体系前后/左右/高度/偏航偏移生成单个微调目标。

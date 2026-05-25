@@ -82,6 +82,7 @@ class OffboardControlBridge : public rclcpp::Node {
         csv_waypoints_ = loadCsvWaypoints(waypoints_csv_path_);
         if (!csv_waypoints_.empty()) {
             takeoff_setpoint_ = makeCsvSetpoint(csv_waypoints_.front());
+            traj_end_setpoint_ = makeCsvSetpoint(csv_waypoints_.back());
             RCLCPP_INFO(get_logger(),
                         "CSV waypoints loaded | count=%zu path=%s first=(%.2f, %.2f, %.2f, yaw %.2f) velocity=(%.2f, %.2f, %.2f)",
                         csv_waypoints_.size(), waypoints_csv_path_.c_str(),
@@ -89,6 +90,13 @@ class OffboardControlBridge : public rclcpp::Node {
                         csv_waypoints_.front().z, csv_waypoints_.front().yaw,
                         csv_waypoints_.front().vx, csv_waypoints_.front().vy,
                         csv_waypoints_.front().vz);
+            RCLCPP_INFO(get_logger(),
+                        "CSV waypoints loaded | count=%zu path=%s last=(%.2f, %.2f, %.2f, yaw %.2f) velocity=(%.2f, %.2f, %.2f)",
+                        csv_waypoints_.size(), waypoints_csv_path_.c_str(),
+                        csv_waypoints_.back().x, csv_waypoints_.back().y,
+                        csv_waypoints_.back().z, csv_waypoints_.back().yaw,
+                        csv_waypoints_.back().vx, csv_waypoints_.back().vy,
+                        csv_waypoints_.back().vz);
         } else {
             takeoff_setpoint_ = makePositionHoldSetpoint(0.0f, 0.0f, 5.0f, static_cast<float>(csv_default_yaw_));
             RCLCPP_WARN(get_logger(),
@@ -155,7 +163,9 @@ class OffboardControlBridge : public rclcpp::Node {
     px4_msgs::msg::VehicleStatus vehicle_status_;
     std_msgs::msg::String offboard_state_;
     px4_msgs::msg::TrajectorySetpoint target_pose_;
-    px4_msgs::msg::TrajectorySetpoint takeoff_setpoint_{};
+    // 由 FSM 通过 SetTarget 服务下发的本段 Ruckig 限速覆盖；任意分量 <=0 表示用 OTG 默认 VEL_LIMIT。
+    std::array<double, 3> target_max_velocity_xyz_{0.0, 0.0, 0.0};
+    px4_msgs::msg::TrajectorySetpoint takeoff_setpoint_{}, traj_end_setpoint_{};
     // Local NED home position at the time the CSV waypoints were recorded.
     // Subtracted from each CSV waypoint so the trajectory is re-anchored on the
     // current takeoff point's PX4 local origin. Filled from ROS parameter
@@ -170,7 +180,7 @@ class OffboardControlBridge : public rclcpp::Node {
     bool has_local_position_{false};
     bool has_vehicle_status_{false};
     bool px4_offboard_active_{false};
-    bool px4_offboard_disabled;
+    bool takeoff_complete_{false};
     bool manual_hover_setpoint_valid_{false};
     px4_msgs::msg::TrajectorySetpoint manual_hover_setpoint_{};
     double latest_heading_yaw_enu_{0.0};
@@ -196,7 +206,6 @@ class OffboardControlBridge : public rclcpp::Node {
         TRAJECTORY_FOLLOWING
     };
     FlightState flight_state_{FlightState::WAITINGFORCOMMAND};
-    bool takeoff_complete_{false};
     static constexpr float POSITION_TOLERANCE = 0.1f;
 
     // ROS interfaces
@@ -368,14 +377,20 @@ void OffboardControlBridge::handle_set_target(const traj_offboard::srv::SetTarge
                                               traj_offboard::srv::SetTarget::Response::SharedPtr response) {
     std::lock_guard<std::mutex> lock(bridge_mutex_);
     target_pose_ = request->target;
+    target_max_velocity_xyz_ = {
+        request->max_velocity_xyz[0],
+        request->max_velocity_xyz[1],
+        request->max_velocity_xyz[2],
+    };
     ++target_generation_;
     response->success = true;
     has_target_ = true;
     RCLCPP_INFO(get_logger(),
-                "Target received | generation=%" PRIu64 " enu=(%.2f, %.2f, %.2f, yaw %.2f)",
+                "Target received | generation=%" PRIu64 " enu=(%.2f, %.2f, %.2f, yaw %.2f) max_vel_xyz=(%.2f, %.2f, %.2f)",
                 target_generation_,
                 target_pose_.position[0], target_pose_.position[1],
-                target_pose_.position[2], target_pose_.yaw);
+                target_pose_.position[2], target_pose_.yaw,
+                target_max_velocity_xyz_[0], target_max_velocity_xyz_[1], target_max_velocity_xyz_[2]);
 }
 
 void OffboardControlBridge::publish_vehicle_command(uint16_t command, float param1, float param2) {
@@ -506,7 +521,7 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::publishConvertedSetpoin
         traj_setpoint_pub_->publish(ned_setpoint);
     }
     else {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
                              "PX4 OFFBOARD inactive | not publishing setpoint");
     }
     return enu_setpoint;
@@ -526,6 +541,7 @@ bool OffboardControlBridge::isArrivedAtPosition(px4_msgs::msg::TrajectorySetpoin
 void OffboardControlBridge::publish_trajectory_setpoint() {
     px4_msgs::msg::TrajectorySetpoint current_state;
     px4_msgs::msg::TrajectorySetpoint target_pose;
+    std::array<double, 3> max_vel_xyz{0.0, 0.0, 0.0};
     uint64_t sent_generation = 0;
     bool sent_target_update = false;
     bool sent_reset = false;
@@ -543,6 +559,7 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
             return;
         }
         target_pose = target_pose_;
+        max_vel_xyz = target_max_velocity_xyz_;
         sent_generation = target_generation_;
         sent_target_update = sent_generation != forwarded_target_generation_;
         sent_reset = need_traj_reseed_;
@@ -559,6 +576,7 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
     request->target = target_pose;
     request->update_target = sent_target_update;
     request->reset_state = sent_reset;
+    request->max_velocity_xyz = {max_vel_xyz[0], max_vel_xyz[1], max_vel_xyz[2]};
 
     auto result = get_traj_setpoint_client_->async_send_request(request, [this, sent_generation, sent_target_update, sent_reset, target_pose](rclcpp::Client<traj_offboard::srv::GetTrajectorySetpoint>::SharedFuture resp_fut) {
         std::lock_guard<std::mutex> lock(bridge_mutex_);
@@ -623,12 +641,6 @@ void OffboardControlBridge::publish_csv_transit_setpoint() {
             std::lock_guard<std::mutex> lock(bridge_mutex_);
             need_traj_reseed_ = true;
         }
-        traj_complete_flag_.trajectory_completed = true;
-        traj_complete_flag_.traj_last_setpoint.position[0] = last_cmd_.position[0];
-        traj_complete_flag_.traj_last_setpoint.position[1] = last_cmd_.position[1];
-        traj_complete_flag_.traj_last_setpoint.position[2] = last_cmd_.position[2];
-        traj_complete_flag_.traj_last_setpoint.yaw = last_cmd_.yaw;
-        traj_completed_flag_pub_->publish(traj_complete_flag_);
         RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "CSV transit complete | count=%zu, current=(%.2f, %.2f, %.2f, yaw %.2f)" LOG_COLOR_RESET, csv_waypoints_.size(), 
                                                     last_cmd_.position[0], last_cmd_.position[1], last_cmd_.position[2], last_cmd_.yaw);
     }
@@ -666,6 +678,8 @@ void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySe
     request->current_state = current_state;
     request->target = takeoff_setpoint;
     request->update_target = true;
+    // 起飞段使用 OTG 默认速度上限。
+    request->max_velocity_xyz = {0.0, 0.0, 0.0};
 
     auto result = get_traj_setpoint_client_->async_send_request(request, [this](rclcpp::Client<traj_offboard::srv::GetTrajectorySetpoint>::SharedFuture resp_fut) {
         std::lock_guard<std::mutex> lock(bridge_mutex_);
@@ -688,6 +702,12 @@ void OffboardControlBridge::publish_takeoff_setpoint(px4_msgs::msg::TrajectorySe
     });
 }
 void OffboardControlBridge::controlLoopOnTimer() {
+    traj_complete_flag_.offboard_mode_active = px4_offboard_active_;
+    traj_complete_flag_.take_off_completed = takeoff_complete_;
+    traj_complete_flag_.trajectory_completed = csv_transit_complete_logged_;
+    traj_complete_flag_.traj_first_setpoint = takeoff_setpoint_;
+    traj_complete_flag_.traj_last_setpoint = traj_end_setpoint_;
+    traj_completed_flag_pub_->publish(traj_complete_flag_);
     switch (flight_state_) {
         case FlightState::WAITINGFORCOMMAND: {
             publish_offboard_control_mode_pva();
@@ -714,10 +734,6 @@ void OffboardControlBridge::controlLoopOnTimer() {
             }
             // no offboard switched
             if (!px4_offboard_active_) {
-                traj_complete_flag_.offboard_mode_active = false;
-                traj_complete_flag_.take_off_completed = false;
-                traj_complete_flag_.trajectory_completed = false;
-                    traj_completed_flag_pub_->publish(traj_complete_flag_);
                 if (has_local_position_) {
                     last_cmd_ = publishConvertedSetpoint(makeCurrentLocalPositionHoldSetpoint());
                     last_cmd_time_ = this->now();
@@ -734,10 +750,6 @@ void OffboardControlBridge::controlLoopOnTimer() {
             } else { // else, manual_hover_setpoint_ is built, and pub every circle
                 if (!manual_hover_setpoint_valid_ && has_local_position_) {
                     captureManualHoverSetpoint();
-                    traj_complete_flag_.offboard_mode_active = true;
-                    traj_complete_flag_.take_off_completed = false;
-                    traj_complete_flag_.trajectory_completed = false;
-                    traj_completed_flag_pub_->publish(traj_complete_flag_);
                 }
                 publishManualHoverSetpoint();
                 RCLCPP_DEBUG_THROTTLE(get_logger(), *this->get_clock(), 5000,
@@ -759,14 +771,6 @@ void OffboardControlBridge::controlLoopOnTimer() {
             publish_takeoff_setpoint(takeoff_setpoint_);
             if (isArrivedAtPosition(takeoff_setpoint_, POSITION_TOLERANCE)) {
                 takeoff_complete_ = true;
-                traj_complete_flag_.offboard_mode_active = true;
-                traj_complete_flag_.take_off_completed = true;
-                traj_complete_flag_.trajectory_completed = false;
-                traj_complete_flag_.traj_first_setpoint.position[0] = last_cmd_.position[0];
-                traj_complete_flag_.traj_first_setpoint.position[1] = last_cmd_.position[1];
-                traj_complete_flag_.traj_first_setpoint.position[2] = last_cmd_.position[2];
-                traj_complete_flag_.traj_first_setpoint.yaw = last_cmd_.yaw;
-                traj_completed_flag_pub_->publish(traj_complete_flag_);
                 flight_state_ = FlightState::TRAJECTORY_FOLLOWING;
                 RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "Bridge state -> TRAJECTORY_FOLLOWING | takeoff complete pos=(%.2f, %.2f, %.2f)" LOG_COLOR_RESET, uav_pose_.pose.position.x, uav_pose_.pose.position.y, uav_pose_.pose.position.z);
             }
