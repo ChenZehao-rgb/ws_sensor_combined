@@ -512,7 +512,8 @@ px4_msgs::msg::TrajectorySetpoint OffboardControlBridge::makeCsvSetpoint(const C
     setpoint.velocity[0] = static_cast<float>(waypoint.vy);
     setpoint.velocity[1] = static_cast<float>(waypoint.vx);
     setpoint.velocity[2] = -static_cast<float>(waypoint.vz);
-    setpoint.yaw = static_cast<float>(waypoint.yaw);
+    // csv yaw is in degrees, convert to radians and also convert from NED to ENU frame (yaw_enu = 90deg - yaw_ned)
+    setpoint.yaw = wrapAngle((90.0 - waypoint.yaw) * M_PI / 180.0);
     return setpoint;
 }
 
@@ -771,7 +772,8 @@ void OffboardControlBridge::controlLoopOnTimer() {
                 ++offboard_setpoint_counter_;
             }
             publish_takeoff_setpoint(takeoff_setpoint_);
-            if (isArrivedAtPosition(takeoff_setpoint_, POSITION_TOLERANCE)) {
+            // if arrived at takeoff position, and trajectory velocity is zero, consider takeoff complete and switch to trajectory following. This is a simple heuristic; in practice you might want to check the actual velocity or use a timer to ensure the vehicle has stabilized at the takeoff point.
+            if (isArrivedAtPosition(takeoff_setpoint_, POSITION_TOLERANCE) && std::hypot(last_cmd_.velocity[0], last_cmd_.velocity[1], last_cmd_.velocity[2]) <= 0.01f) {
                 takeoff_complete_ = true;
                 flight_state_ = FlightState::TRAJECTORY_FOLLOWING;
                 RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "Bridge state -> TRAJECTORY_FOLLOWING | takeoff complete pos=(%.2f, %.2f, %.2f)" LOG_COLOR_RESET, uav_pose_.pose.position.x, uav_pose_.pose.position.y, uav_pose_.pose.position.z);
@@ -874,10 +876,10 @@ OffboardControlBridge::parseCsvWaypointLine(const std::string & line,
             std::stod(columns[1]),
             std::stod(columns[2]),
             std::stod(columns[3]),
-            csv_default_yaw_,
             std::stod(columns[4]),
             std::stod(columns[5]),
-            std::stod(columns[6])};
+            std::stod(columns[6]),
+            std::stod(columns[7])};
     } catch (const std::exception & e) {
         RCLCPP_WARN(get_logger(), "CSV waypoint ignored | path=%s line=%zu error=%s",
                     waypoints_csv_path_.c_str(), line_number, e.what());

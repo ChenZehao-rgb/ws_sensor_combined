@@ -8,7 +8,7 @@
 #include <chrono>
 
 // CSV 保存路径（硬编码绝对路径）
-static constexpr const char * CSV_PATH = "/home/neu/manipulator_ws/src/uav_offboard/waypoints.csv";
+static constexpr const char * CSV_PATH = "/home/sia/ws_sensor_combined/src/uav_offboard/waypoints.csv";
 // 超时时间（秒）- 连续两个航点之间的最大间隔
 static constexpr double TIMEOUT_SEC = 5.0;
 
@@ -134,7 +134,7 @@ private:
     }
 
     // 表头
-    ofs << "index,x,y,z,vx,vy,vz\n";
+    ofs << "index,x,y,z,yaw,vn,ve,vd,an,ae,ad\n";
 
     // 数据行（map 已按 key 升序排列）
     for (const auto & [idx, wp] : waypoint_map_) {
@@ -142,9 +142,13 @@ private:
           << wp.position.position.x << ","
           << wp.position.position.y << ","
           << wp.position.position.z << ","
+          << wp.yaw << ","
           << wp.velocity.x << ","
           << wp.velocity.y << ","
-          << wp.velocity.z << "\n";
+          << wp.velocity.z << ","
+          << wp.acceleration.x << ","
+          << wp.acceleration.y << ","
+          << wp.acceleration.z << "\n";
     }
 
     ofs.close();

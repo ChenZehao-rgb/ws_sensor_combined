@@ -251,7 +251,7 @@ class UavOffboardFsm : public rclcpp::Node {
     // 仿真模式（无测距）则以 retreat_max_travel_m_ 作为体系后向最大位移；体系 x 速度上限 retreat_speed_m_s_。
     double retreat_target_distance_m_{5.0};
     double retreat_max_travel_m_{5.0};
-    double retreat_speed_m_s_{0.1};
+    double retreat_speed_m_s_{0.5};
     double sample_adjust_forward_m_{0.2};
     double sample_adjust_right_m_{0.0};
     double sample_adjust_z_offset_m_{0.0};

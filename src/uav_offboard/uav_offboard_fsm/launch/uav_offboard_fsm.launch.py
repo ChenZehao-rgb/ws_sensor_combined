@@ -27,13 +27,13 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[params_file],
         arguments=['--ros-args', '--log-level', log_level],
     )
-    vsf = Node(
-            package='vehicle_state_forward',
-            executable='vehicle_state_forward_node',
-            name='vehicle_state_forward_node',
-            output='screen',
-            emulate_tty=True
-        )
+    # vsf = Node(
+    #         package='vehicle_state_forward',
+    #         executable='vehicle_state_forward_node',
+    #         name='vehicle_state_forward_node',
+    #         output='screen',
+    #         emulate_tty=True
+    #     )
     # ground_station_sim = Node(
     #     package='uav_offboard_fsm',
     #     executable='ground_station_sim_node',
@@ -55,5 +55,5 @@ def generate_launch_description() -> LaunchDescription:
         LogInfo(msg=['uav_offboard_fsm: params_file=', params_file]),
         fsm,
         # ground_station_sim,
-        vsf
+        # vsf
     ])
