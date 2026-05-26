@@ -23,3 +23,4 @@ bool uav_search_succeed
 bool uav_approach_succeed
 bool uav_adjust_succeed
 bool uav_ready_for_back
+bool uav_back_home_succeed

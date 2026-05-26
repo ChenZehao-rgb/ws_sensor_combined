@@ -245,7 +245,11 @@ class UavOffboardFsm : public rclcpp::Node {
     double approach_max_travel_m_{3.0};
     // 靠近段期望的体系前向速度（仅 x 轴），y、z 方向恒为 0。
     double approach_speed_m_s_{0.1};
-    double retreat_distance_m_{1.0};
+    // RETREAT 段目标：测距传感器读数达到 retreat_target_distance_m_ 时停止；
+    // 仿真模式（无测距）则以 retreat_max_travel_m_ 作为体系后向最大位移；体系 x 速度上限 retreat_speed_m_s_。
+    double retreat_target_distance_m_{5.0};
+    double retreat_max_travel_m_{5.0};
+    double retreat_speed_m_s_{0.1};
     double sample_adjust_forward_m_{0.2};
     double sample_adjust_right_m_{0.0};
     double sample_adjust_z_offset_m_{0.0};
@@ -788,7 +792,8 @@ void UavOffboardFsm::handleUavHold()
                           "UAV_HOLD | sampling complete; waiting UAV_PRE_BACK_HOME");
 }
 
-// 后退处理：返航前沿机体系后方退回安全距离，完成后允许执行 BACK_HOME。
+// 后退处理：APPROACH 的逆过程。沿机体系后方慢速退回安全距离，完成后允许执行 BACK_HOME。
+// 优先使用测距传感器：读数达到 retreat_target_distance_m_ 即视为完成；否则走完 retreat_waypoints_ 中的航点。
 void UavOffboardFsm::handleRetreat()
 {
     if (!ready_for_transit_) {
@@ -798,10 +803,21 @@ void UavOffboardFsm::handleRetreat()
         return;
     }
 
+    if (latest_distance_m_ &&
+        *latest_distance_m_ >= retreat_target_distance_m_ - approach_distance_tolerance_m_) {
+        if (!uav_ready_for_back_) {
+            uav_ready_for_back_ = true;
+            clearActiveTarget();
+            RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "RETREAT complete | uavReadyForBack=1 source=distance_sensor latest=%.2fm" LOG_COLOR_RESET,
+                        *latest_distance_m_);
+        }
+        return;
+    }
+
     if (handleWaypointSequence(retreat_waypoints_, retreat_index_, "retreat")) {
         if (!uav_ready_for_back_) {
             uav_ready_for_back_ = true;
-            RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "RETREAT complete | uavReadyForBack=1 waiting BACK_HOME" LOG_COLOR_RESET);
+            RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "RETREAT complete | uavReadyForBack=1 source=target_arrival" LOG_COLOR_RESET);
         }
     }
 }
@@ -1211,12 +1227,50 @@ void UavOffboardFsm::generateSampleAdjustWaypoints()
     sample_adjust_waypoints_.push_back(target);
 }
 
-// 生成后退航点：从当前位置沿机体系后方移动 retreat_distance_m，用于离开植株或障碍物。
+// 生成后退航点：APPROACH 的逆过程。仅沿体系 -x 慢速后退（y、z 速度 0），由测距传感器判定退到 retreat_target_distance_m_。
+// - 有新鲜测距：后退距离 = clamp(target - latest, 0, retreat_max_travel_m_)；handleRetreat 内监测距离传感器以提前终止。
+// - 无测距（仿真）：后退距离 = retreat_max_travel_m_(默认 5m)，到达航点即视为完成。
+// 末端速度设为 0；巡航速度通过 target_max_velocity_xyz_ = retreat_speed_m_s_ 控制（Ruckig per-axis 上限）。
 void UavOffboardFsm::generateRetreatWaypoints()
 {
     const auto base = currentOrHoverWaypoint();
     retreat_waypoints_.clear();
-    retreat_waypoints_.push_back(offsetBodyFrame(base, -retreat_distance_m_, 0.0));
+
+    const bool sensor_ok = hasFreshDistanceSensor();
+    double travel_distance = retreat_max_travel_m_;
+    if (sensor_ok) {
+        travel_distance = std::clamp(retreat_target_distance_m_ - *latest_distance_m_,
+                                     0.0, retreat_max_travel_m_);
+        if (travel_distance <= approach_distance_tolerance_m_) {
+            RCLCPP_INFO(get_logger(),
+                        "Retreat skip | distance_sensor=%.2fm already beyond target=%.2fm (tol=%.2fm)",
+                        *latest_distance_m_, retreat_target_distance_m_,
+                        approach_distance_tolerance_m_);
+            target_velocity_ = {0.0, 0.0, 0.0};
+            target_max_velocity_xyz_ = {0.0, 0.0, 0.0};
+            return;
+        }
+        RCLCPP_INFO(get_logger(),
+                    "Retreat plan | source=distance_sensor latest=%.2fm target=%.2fm travel=%.2fm speed=%.2fm/s",
+                    *latest_distance_m_, retreat_target_distance_m_, travel_distance,
+                    retreat_speed_m_s_);
+    } else {
+        RCLCPP_INFO(get_logger(),
+                    "Retreat plan | source=simulation (no distance sensor) travel=%.2fm speed=%.2fm/s",
+                    travel_distance, retreat_speed_m_s_);
+    }
+
+    // 沿体系后向（-x）移动 travel_distance。
+    retreat_waypoints_.push_back(offsetBodyFrame(base, -travel_distance, 0.0));
+
+    // 末端速度 0（同 APPROACH，避免 |target_v|=max_v 触发 Ruckig ErrorInvalidInput）。
+    target_velocity_ = {0.0, 0.0, 0.0};
+    // Ruckig 平动速度 per-axis 上限压到 retreat_speed_m_s_，控制后退巡航速度。
+    target_max_velocity_xyz_ = {
+        retreat_speed_m_s_,
+        retreat_speed_m_s_,
+        retreat_speed_m_s_,
+    };
 }
 
 // 机体系偏移转换：把 forward/right 偏移按 base.yaw 旋转到本地坐标系，保持高度和偏航不变。
@@ -1255,6 +1309,7 @@ void UavOffboardFsm::publishStatus(ControlState state)
         status_msg.uav_approach_succeed  = approach_completed_;
         status_msg.uav_adjust_succeed    = uav_adjust_succeed_;
         status_msg.uav_ready_for_back    = uav_ready_for_back_;
+        status_msg.uav_back_home_succeed = back_home_;
         status_pub_->publish(status_msg);
 }
 
