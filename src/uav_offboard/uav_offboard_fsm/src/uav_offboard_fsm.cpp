@@ -28,8 +28,10 @@
 #include <string>
 #include <vector>
 
-// ANSI color helpers for terminal log highlights (green = state switch / milestone success).
+// ANSI color helpers for terminal log highlights.
+// green = state switch / milestone success; blue = setpoint (target) change events.
 #define LOG_COLOR_GREEN "\033[1;32m"
+#define LOG_COLOR_BLUE  "\033[1;34m"
 #define LOG_COLOR_RESET "\033[0m"
 
 class UavOffboardFsm : public rclcpp::Node {
@@ -488,7 +490,12 @@ void UavOffboardFsm::onStateEntry(ControlState state)
             back_home_index_ = 0;
             back_home_ = false;
             home_waypoint_ = waypointFromSetpoint(traj_complete_flag_.traj_first_setpoint);
-            back_home_waypoints_ = {home_waypoint_};
+            {
+                const auto current = currentOrHoverWaypoint();
+                const Waypoint lifted{current.x, current.y, current.z + 5.0, current.yaw};
+                const Waypoint cruise{home_waypoint_.x, home_waypoint_.y, lifted.z, lifted.yaw};
+                back_home_waypoints_ = {lifted, cruise, home_waypoint_};
+            }
             break;
         case ControlState::UAV_START:
         case ControlState::UAV_TASK_TERM:
@@ -697,8 +704,9 @@ void UavOffboardFsm::handleApproachPlant()
 }
 
 // 接近完成保持状态：无人机保持在植株附近，等待总状态机下发 UAV_POSE_ADAP 并选择采样微调模式。
-// 进入后立刻下发一个以当前位姿为目标、末端速度为 0 的悬停 set_target，
-// 覆盖 APPROACH 段残留在 Ruckig 内的 0.1 m/s 末端速度，避免飞机继续向前漂。
+// 进入时不下发新的 set_target：APPROACH 段生成的航点已经以末端速度 0 收尾，
+// 让 Ruckig 沿用 bridge 中已缓存的 APPROACH 目标自然完成轨迹（与 RETREAT 行为一致），
+// 避免"target_pos=当前参考位置 + target_vel=0"导致的前冲-回拉 overshoot 与小位置变化。
 void UavOffboardFsm::handleUavPreHold()
 {
     if (!approach_completed_) {
@@ -708,20 +716,8 @@ void UavOffboardFsm::handleUavPreHold()
         return;
     }
 
-    if (!active_target_) {
-        // target_velocity_ 与 target_max_velocity_xyz_ 已在 onStateEntry 重置为 0，
-        // 这里只需把当前位姿设为目标位置即可形成悬停指令。
-        setActiveTarget(currentOrHoverWaypoint());
-        RCLCPP_INFO(get_logger(),
-                    "UAV_PRE_HOLD hover target | target=(%.2f, %.2f, %.2f, yaw %.2f) endpoint_vel=0",
-                    active_target_->x, active_target_->y, active_target_->z, active_target_->yaw);
-    }
-    if (active_target_ && !active_target_sent_ && !target_request_pending_) {
-        sendActiveTarget();
-    }
-
     RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
-                          "UAV_PRE_HOLD | waiting UAV_POSE_ADAP or SAMP_ADJUST_AUTO/MANUAL");
+                          "UAV_PRE_HOLD | holding APPROACH endpoint; waiting UAV_POSE_ADAP or SAMP_ADJUST_AUTO/MANUAL");
 }
 
 // 自动采样微调处理：TARG_READY 后执行姿态/位置微调，成功后等待 ARM_CONFIG_PREP + SAMPL_OPERA。
@@ -915,7 +911,7 @@ bool UavOffboardFsm::handleWaypointSequence(std::vector<Waypoint> & waypoints,
     if (!active_target_) {
         setActiveTarget(waypoints[index]);
         RCLCPP_INFO(get_logger(),
-                    "Waypoint dispatch | stage=%s index=%zu/%zu target=(%.2f, %.2f, %.2f, yaw %.2f)",
+                    LOG_COLOR_BLUE "Waypoint dispatch | stage=%s index=%zu/%zu target=(%.2f, %.2f, %.2f, yaw %.2f)" LOG_COLOR_RESET,
                     label.c_str(), index + 1, waypoints.size(), active_target_->x,
                     active_target_->y, active_target_->z, active_target_->yaw);
     }
@@ -1020,7 +1016,7 @@ void UavOffboardFsm::sendActiveTarget()
                 if (resp->success) {
                     active_target_sent_ = true;
                     RCLCPP_INFO(get_logger(),
-                                "Target accepted by bridge | service=online_traj_generator/set_target target=(%.2f, %.2f, %.2f, yaw %.2f)",
+                                LOG_COLOR_BLUE "Target accepted by bridge | service=online_traj_generator/set_target target=(%.2f, %.2f, %.2f, yaw %.2f)" LOG_COLOR_RESET,
                                 target.x, target.y, target.z, target.yaw);
                 } else {
                     active_target_sent_ = false;

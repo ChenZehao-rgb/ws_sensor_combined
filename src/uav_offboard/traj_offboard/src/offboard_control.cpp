@@ -39,8 +39,10 @@
 
 using namespace std::chrono_literals;
 
-// ANSI color helpers for terminal log highlights (green = bridge state switch / arm success).
+// ANSI color helpers for terminal log highlights.
+// green = bridge state switch / arm success; blue = setpoint (target) change events.
 #define LOG_COLOR_GREEN "\033[1;32m"
+#define LOG_COLOR_BLUE  "\033[1;34m"
 #define LOG_COLOR_RESET "\033[0m"
 
 static inline void quat2RPY(const geometry_msgs::msg::Quaternion &quat, double &roll,
@@ -386,7 +388,7 @@ void OffboardControlBridge::handle_set_target(const traj_offboard::srv::SetTarge
     response->success = true;
     has_target_ = true;
     RCLCPP_INFO(get_logger(),
-                "Target received | generation=%" PRIu64 " enu=(%.2f, %.2f, %.2f, yaw %.2f) max_vel_xyz=(%.2f, %.2f, %.2f)",
+                LOG_COLOR_BLUE "Target received | generation=%" PRIu64 " enu=(%.2f, %.2f, %.2f, yaw %.2f) max_vel_xyz=(%.2f, %.2f, %.2f)" LOG_COLOR_RESET,
                 target_generation_,
                 target_pose_.position[0], target_pose_.position[1],
                 target_pose_.position[2], target_pose_.yaw,
@@ -598,7 +600,7 @@ void OffboardControlBridge::publish_trajectory_setpoint() {
             if (sent_target_update && forwarded_target_generation_ < sent_generation) {
                 forwarded_target_generation_ = sent_generation;
                 RCLCPP_INFO(this->get_logger(),
-                            "Target forwarded to trajectory generator | generation=%" PRIu64 " target=(%.2f, %.2f, %.2f, yaw %.2f)",
+                            LOG_COLOR_BLUE "Target forwarded to trajectory generator | generation=%" PRIu64 " target=(%.2f, %.2f, %.2f, yaw %.2f)" LOG_COLOR_RESET,
                             sent_generation, target_pose.position[0], target_pose.position[1],
                             target_pose.position[2], target_pose.yaw);
             }
