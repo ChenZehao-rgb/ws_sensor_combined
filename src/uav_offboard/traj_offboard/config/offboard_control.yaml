@@ -4,7 +4,7 @@ offboard_control_bridge:
     waypoints_csv_path: "/home/sia/ws_sensor_combined/src/uav_offboard/waypoints.csv"
 
     # CSV 航点流推送频率 (Hz)
-    csv_stream_rate_hz: 50.0
+    csv_stream_rate_hz: 20.0
 
     # CSV 没有 yaw 列时使用的默认 yaw (rad)
     csv_default_yaw: 0.0

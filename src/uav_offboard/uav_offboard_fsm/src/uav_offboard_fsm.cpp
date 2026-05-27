@@ -234,8 +234,8 @@ class UavOffboardFsm : public rclcpp::Node {
     bool require_distance_sensor_{false};
     bool require_external_switch_service_{false};
 
-    double position_tolerance_{0.25};
-    double yaw_tolerance_{0.15};
+    double position_tolerance_{0.1};
+    double yaw_tolerance_{0.1}; // 0.1 radian，约5.7度
     double distance_sensor_timeout_s_{1.0};
     double vehicle_local_position_timeout_s_{1.0};
     double state_feedback_timeout_s_{1.0};

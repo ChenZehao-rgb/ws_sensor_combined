@@ -142,7 +142,7 @@ class OffboardControlBridge : public rclcpp::Node {
         
         traj_completed_flag_pub_ = this->create_publisher<traj_offboard::msg::TrajCompleteFlag>("/traj_offboard/traj_complete_flag", 10);
         // Control timer: pair OffboardControlMode with a setpoint
-        timer_ = this->create_wall_timer(20ms, std::bind(&OffboardControlBridge::controlLoopOnTimer, this));
+        timer_ = this->create_wall_timer(50ms, std::bind(&OffboardControlBridge::controlLoopOnTimer, this));
         RCLCPP_INFO(get_logger(),
                     LOG_COLOR_GREEN "Offboard bridge ready | use_takeoff_on_ground=%s fsm_state=/uav_offboard_fsm/offboard_state set_target=online_traj_generator/set_target traj_service=/online_traj_generator/get_trajectory_setpoints" LOG_COLOR_RESET,
                     use_takeoff_on_ground_ ? "true" : "false");
@@ -167,7 +167,7 @@ class OffboardControlBridge : public rclcpp::Node {
     px4_msgs::msg::TrajectorySetpoint target_pose_;
     // 由 FSM 通过 SetTarget 服务下发的本段 Ruckig 限速覆盖；任意分量 <=0 表示用 OTG 默认 VEL_LIMIT。
     std::array<double, 3> target_max_velocity_xyz_{0.0, 0.0, 0.0};
-    px4_msgs::msg::TrajectorySetpoint takeoff_setpoint_{}, traj_end_setpoint_{};
+    px4_msgs::msg::TrajectorySetpoint takeoff_setpoint_{}, traj_end_setpoint_{}, takeoff_yaw_only{};
     // Local NED home position at the time the CSV waypoints were recorded.
     // Subtracted from each CSV waypoint so the trajectory is re-anchored on the
     // current takeoff point's PX4 local origin. Filled from ROS parameter
@@ -189,7 +189,7 @@ class OffboardControlBridge : public rclcpp::Node {
     bool has_heading_yaw_{false};
 
     std::string waypoints_csv_path_{"/home/sia/ws_sensor_combined/src/uav_offboard/waypoints.csv"};
-    double csv_stream_rate_hz_{50.0};
+    double csv_stream_rate_hz_{20.0};
     double csv_default_yaw_{0.0};
     std::vector<CsvWaypoint> csv_waypoints_;
     std::size_t csv_transit_index_{0};
@@ -204,11 +204,13 @@ class OffboardControlBridge : public rclcpp::Node {
     // Takeoff sequence state management
     enum class FlightState {
         WAITINGFORCOMMAND,
+        TAKEOFF_YAW_ONLY,
         TAKEOFF,
         TRAJECTORY_FOLLOWING
     };
     FlightState flight_state_{FlightState::WAITINGFORCOMMAND};
     static constexpr float POSITION_TOLERANCE = 0.1f;
+    static constexpr float YAW_TOLERANCE = 0.05f; // rad
 
     // ROS interfaces
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr vehicle_local_position_sub_;
@@ -747,8 +749,8 @@ void OffboardControlBridge::controlLoopOnTimer() {
             }
             // if fsm switched state
             if(offboard_state_.data == "UAV_START") {
-                flight_state_ = FlightState::TAKEOFF;
-                RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "Bridge state -> TAKEOFF | trigger=%s manual offboard active, publishing takeoff setpoints" LOG_COLOR_RESET,
+                flight_state_ = FlightState::TAKEOFF_YAW_ONLY;
+                RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "Bridge state -> TAKEOFF_YAW_ONLY | trigger=%s manual offboard active, aligning yaw before takeoff" LOG_COLOR_RESET,
                             offboard_state_.data.c_str());
             } else { // else, manual_hover_setpoint_ is built, and pub every circle
                 if (!manual_hover_setpoint_valid_ && has_local_position_) {
@@ -757,6 +759,29 @@ void OffboardControlBridge::controlLoopOnTimer() {
                 publishManualHoverSetpoint();
                 RCLCPP_DEBUG_THROTTLE(get_logger(), *this->get_clock(), 5000,
                                       "Manual offboard active | hovering until FSM state UAV_START");
+            }
+            break;
+        }
+        case FlightState::TAKEOFF_YAW_ONLY: {
+            publish_offboard_control_mode_pva();
+            // Hold current position, only rotate to the takeoff target yaw
+            takeoff_yaw_only = last_cmd_;
+            takeoff_yaw_only.yaw = takeoff_setpoint_.yaw;
+            publish_takeoff_setpoint(takeoff_yaw_only);
+
+            const double yaw_err = wrapAngle(static_cast<double>(takeoff_setpoint_.yaw) - getCurrentYawEnu());
+            const bool yaw_arrived = std::abs(yaw_err) < YAW_TOLERANCE;
+            if (yaw_arrived) {
+                flight_state_ = FlightState::TAKEOFF;
+                RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "Bridge state -> TAKEOFF | yaw aligned (current=%.2f target=%.2f), publishing takeoff setpoint" LOG_COLOR_RESET,
+                            getCurrentYawEnu() * 180.0 / M_PI,
+                            takeoff_setpoint_.yaw * 180.0 / M_PI);
+            } else {
+                RCLCPP_DEBUG_THROTTLE(get_logger(), *this->get_clock(), 3000,
+                                      "Takeoff yawing | current_yaw=%.2f target_yaw=%.2f err=%.2f",
+                                      getCurrentYawEnu() * 180.0 / M_PI,
+                                      takeoff_setpoint_.yaw * 180.0 / M_PI,
+                                      yaw_err * 180.0 / M_PI);
             }
             break;
         }
