@@ -492,9 +492,19 @@ void UavOffboardFsm::onStateEntry(ControlState state)
             home_waypoint_ = waypointFromSetpoint(traj_complete_flag_.traj_first_setpoint);
             {
                 const auto current = currentOrHoverWaypoint();
-                const Waypoint lifted{current.x, current.y, current.z + 5.0, current.yaw};
-                const Waypoint cruise{home_waypoint_.x, home_waypoint_.y, lifted.z, lifted.yaw};
-                back_home_waypoints_ = {lifted, cruise, home_waypoint_};
+                const double cruise_z = current.z + 5.0;
+                const double dx = home_waypoint_.x - current.x;
+                const double dy = home_waypoint_.y - current.y;
+                const double horiz_dist = std::hypot(dx, dy);
+                const double heading_yaw = (horiz_dist > position_tolerance_)
+                                               ? wrapAngle(std::atan2(dy, dx))
+                                               : current.yaw;
+
+                const Waypoint lifted{current.x, current.y, cruise_z, current.yaw};
+                const Waypoint cruise_yaw{current.x, current.y, cruise_z, heading_yaw};
+                const Waypoint cruise{home_waypoint_.x, home_waypoint_.y, cruise_z, heading_yaw};
+                const Waypoint final_yaw_above{home_waypoint_.x, home_waypoint_.y, cruise_z, home_waypoint_.yaw};
+                back_home_waypoints_ = {lifted, cruise_yaw, cruise, final_yaw_above, home_waypoint_};
             }
             break;
         case ControlState::UAV_START:

@@ -83,7 +83,11 @@ private:
     targ_.position[0] = traj_target_.position[0];
     targ_.position[1] = traj_target_.position[1];
     targ_.position[2] = traj_target_.position[2];
-    targ_.position[3] = traj_target_.yaw;
+    // Ruckig 把 position[3] 当作普通标量插值，不会自动选最短弧。这里把目标 yaw 解包到
+    // current yaw 的 ±π 邻域，强制走最短旋转方向，避免跨越 ±π 时走 >180° 长路径。
+    const double yaw_delta = traj_target_.yaw - current_state_.yaw;
+    const double yaw_wrapped = std::atan2(std::sin(yaw_delta), std::cos(yaw_delta));
+    targ_.position[3] = current_state_.yaw + yaw_wrapped;
 
     targ_.velocity[0] = traj_target_.velocity[0];
     targ_.velocity[1] = traj_target_.velocity[1];
