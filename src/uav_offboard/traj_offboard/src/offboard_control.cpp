@@ -765,7 +765,7 @@ void OffboardControlBridge::controlLoopOnTimer() {
         case FlightState::TAKEOFF_YAW_ONLY: {
             publish_offboard_control_mode_pva();
             // Hold current position, only rotate to the takeoff target yaw
-            takeoff_yaw_only = last_cmd_;
+            takeoff_yaw_only = manual_hover_setpoint_;
             takeoff_yaw_only.yaw = takeoff_setpoint_.yaw;
             publish_takeoff_setpoint(takeoff_yaw_only);
 

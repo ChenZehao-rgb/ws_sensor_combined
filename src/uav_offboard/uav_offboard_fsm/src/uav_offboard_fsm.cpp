@@ -60,7 +60,18 @@ class UavOffboardFsm : public rclcpp::Node {
                 {5.0, 5.0, takeoff_waypoint_.z, 1.57079632679},
             };
         }
-        
+
+        // 必须在创建任何 pub/sub/timer/service/client 之前先建好 callback group。
+        cbg_fsm_     = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        cbg_sensor_  = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        cbg_command_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        cbg_service_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+        rclcpp::SubscriptionOptions sensor_sub_opts;
+        sensor_sub_opts.callback_group = cbg_sensor_;
+        rclcpp::SubscriptionOptions command_sub_opts;
+        command_sub_opts.callback_group = cbg_command_;
+
         // 发给底层offboard状态定义
         offboard_state_pub_ =
             create_publisher<std_msgs::msg::String>("/uav_offboard_fsm/offboard_state", publisher_queue_depth_);
@@ -71,53 +82,67 @@ class UavOffboardFsm : public rclcpp::Node {
             create_publisher<px4_msgs::msg::VehicleCommand>("/fmu/in/vehicle_command", publisher_queue_depth_);
 
         //请求轨迹生成服务的客户端，发送目标点给在线轨迹生成器，后者调用ruckig库计算轨迹并发布状态反馈
+        //客户端响应回调会取 fsm_mutex_，与 controlLoopOnTimer 同组以天然串行。
         set_target_client_ =
-            create_client<traj_offboard::srv::SetTarget>("online_traj_generator/set_target");
+            create_client<traj_offboard::srv::SetTarget>("online_traj_generator/set_target",
+                                                         rmw_qos_profile_services_default, cbg_fsm_);
         switch_status_client_ =
-            create_client<status_interfaces_pkg::srv::SwitchStatus>("/ground_station/switch_status");
+            create_client<status_interfaces_pkg::srv::SwitchStatus>("/ground_station/switch_status",
+                                                                    rmw_qos_profile_services_default, cbg_fsm_);
+        // actuator_control 服务回调里有 sleep_for(200ms)，必须放到独立组，避免阻塞 FSM/传感器/指令组。
         actuator_control_srv_ = create_service<status_interfaces_pkg::srv::ActuatorControl>(
             "/uav_offboard_fsm/actuator_control",
             std::bind(&UavOffboardFsm::handleActuatorControl, this,
-                      std::placeholders::_1, std::placeholders::_2));
+                      std::placeholders::_1, std::placeholders::_2),
+            rmw_qos_profile_services_default, cbg_service_);
 
         status_timer_ = create_wall_timer(std::chrono::milliseconds(50),
-                                          std::bind(&UavOffboardFsm::statusPublishOnTimer, this));
+                                          std::bind(&UavOffboardFsm::statusPublishOnTimer, this),
+                                          cbg_fsm_);
         // keyboard control command
         control_command_sub_ = create_subscription<std_msgs::msg::String>(
             "/uav_offboard_fsm/control_command", subscriber_queue_depth_,
-            std::bind(&UavOffboardFsm::handleControlCommand, this, std::placeholders::_1));
+            std::bind(&UavOffboardFsm::handleControlCommand, this, std::placeholders::_1),
+            command_sub_opts);
         // main state control command
         main_task_status_sub_ = create_subscription<status_interfaces_pkg::msg::TaskFSM>(
             "/main_task_fsm/task_states", subscriber_queue_depth_,
-            std::bind(&UavOffboardFsm::handleMainTaskStatus, this, std::placeholders::_1));
+            std::bind(&UavOffboardFsm::handleMainTaskStatus, this, std::placeholders::_1),
+            command_sub_opts);
 
         ruckig_state_sub_ = create_subscription<sensor_msgs::msg::JointState>(
             "/online_traj_generator/ruckig_state", state_feedback_queue_depth_,
-            std::bind(&UavOffboardFsm::handleRuckigState, this, std::placeholders::_1));
-        
+            std::bind(&UavOffboardFsm::handleRuckigState, this, std::placeholders::_1),
+            sensor_sub_opts);
+
         traj_complete_flag_sub_ = create_subscription<traj_offboard::msg::TrajCompleteFlag>(
             "/traj_offboard/traj_complete_flag", subscriber_queue_depth_,
-            std::bind(&UavOffboardFsm::handleTrajCompleteFlag, this, std::placeholders::_1));
+            std::bind(&UavOffboardFsm::handleTrajCompleteFlag, this, std::placeholders::_1),
+            sensor_sub_opts);
         auto sensor_qos = rclcpp::SensorDataQoS(); //best effort, duable volatile
         sensor_qos.keep_last(static_cast<std::size_t>(sensor_queue_depth_));
 
         vehicle_local_position_sub_ = create_subscription<px4_msgs::msg::VehicleLocalPosition>(
             "/fmu/out/vehicle_local_position", sensor_qos,
-            std::bind(&UavOffboardFsm::handleVehicleLocalPosition, this, std::placeholders::_1));
+            std::bind(&UavOffboardFsm::handleVehicleLocalPosition, this, std::placeholders::_1),
+            sensor_sub_opts);
 
         home_position_sub_ = create_subscription<px4_msgs::msg::HomePosition>(
             "/fmu/out/home_position", sensor_qos,
-            std::bind(&UavOffboardFsm::handleHomePosition, this, std::placeholders::_1));
+            std::bind(&UavOffboardFsm::handleHomePosition, this, std::placeholders::_1),
+            sensor_sub_opts);
 
         distance_sensor_sub_ = create_subscription<px4_msgs::msg::DistanceSensor>(
             "/fmu/out/distance_sensor", sensor_qos,
-            std::bind(&UavOffboardFsm::handleDistanceSensor, this, std::placeholders::_1));
-        
+            std::bind(&UavOffboardFsm::handleDistanceSensor, this, std::placeholders::_1),
+            sensor_sub_opts);
+
         // actuator_outputs_sub_ = create_subscription<px4_msgs::msg::ActuatorOutputs>(
         //     "/fmu/out/actuator_outputs", sensor_qos,
         //     std::bind(&UavOffboardFsm::handleActuatorOutputs, this, std::placeholders::_1));
         timer_ = create_wall_timer(std::chrono::milliseconds(control_loop_period_ms_),
-                                   std::bind(&UavOffboardFsm::controlLoopOnTimer, this));
+                                   std::bind(&UavOffboardFsm::controlLoopOnTimer, this),
+                                   cbg_fsm_);
 
         RCLCPP_INFO(get_logger(),
                     LOG_COLOR_GREEN "uav_offboard_fsm ready | initial=%s loop=%dms; waiting for SELF_CHECK" LOG_COLOR_RESET,
@@ -201,6 +226,15 @@ class UavOffboardFsm : public rclcpp::Node {
     std::atomic<int64_t> last_main_task_dispatch_ns_{0};
     ControlState previous_state_{ControlState::SELF_CHECK};
     mutable std::mutex fsm_mutex_;
+    // Callback group 分配：
+    //  cbg_fsm_      —— 状态机主循环、状态发布定时器、客户端响应（共用 fsm_mutex_，互斥即可）
+    //  cbg_sensor_   —— 高频传感器订阅（位置、home、测距、ruckig 反馈、轨迹完成标志）
+    //  cbg_command_  —— 上层/键盘指令订阅
+    //  cbg_service_  —— actuator_control 服务（含 200ms sleep_for，独立组避免阻塞 FSM）
+    rclcpp::CallbackGroup::SharedPtr cbg_fsm_;
+    rclcpp::CallbackGroup::SharedPtr cbg_sensor_;
+    rclcpp::CallbackGroup::SharedPtr cbg_command_;
+    rclcpp::CallbackGroup::SharedPtr cbg_service_;
 
     std::optional<sensor_msgs::msg::JointState> latest_actual_state_;
     std::optional<sensor_msgs::msg::JointState> latest_reference_state_;
@@ -264,7 +298,7 @@ class UavOffboardFsm : public rclcpp::Node {
     double heading_yaw_offset_rad_{1.5707963267948966};
     int distance_sensor_min_signal_quality_{1};
     int control_loop_period_ms_{50};
-    int executor_threads_{2};
+    int executor_threads_{4};
     int publisher_queue_depth_{10};
     int subscriber_queue_depth_{10};
     int state_feedback_queue_depth_{10};
@@ -869,7 +903,7 @@ void UavOffboardFsm::publish_vehicle_command(uint16_t command, float param1, flo
     if (vehicle_command_publisher_->get_subscription_count() > 0) {
         vehicle_command_publisher_->publish(msg);
         RCLCPP_INFO(this->get_logger(),
-                    "Published vehicle_command - command: %d, param1: %.2f, param2: %.2f",
+                   LOG_COLOR_GREEN "Published vehicle_command - command: %d, param1: %.2f, param2: %.2f" LOG_COLOR_RESET,
                     command, param1, param2);
     } else {
         RCLCPP_WARN(this->get_logger(), "No subscribers for /fmu/in/vehicle_command");
@@ -893,14 +927,19 @@ void UavOffboardFsm::handleActuatorControl(
         response->success = false;
         return;
     }
-
+    // first param 0 to initialize, then 1 to close/open gripper, -1 to cut/release
+    publish_vehicle_command(
+        px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_ACTUATOR, 0.0f, -1.0f);
+    RCLCPP_INFO(get_logger(),  "ActuatorControl | initialization command sent to FMU" );
+    // Ensure a short delay between the initialization command and the actual control command to allow the FMU to process the first command.
+    rclcpp::sleep_for(std::chrono::milliseconds(200));
     publish_vehicle_command(
         px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_ACTUATOR,
         request->close ? 1.0f : -1.0f,
         request->cut ? 1.0f : -1.0f);
     response->success = true;
     RCLCPP_INFO(get_logger(),
-                "ActuatorControl | close=%d cut=%d -> FMU sent",
+                 LOG_COLOR_BLUE "ActuatorControl | close=%d cut=%d -> FMU sent" LOG_COLOR_RESET,
                 static_cast<int>(request->close), static_cast<int>(request->cut));
 }
 
