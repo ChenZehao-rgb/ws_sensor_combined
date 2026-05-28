@@ -89,7 +89,8 @@ class UavOffboardFsm : public rclcpp::Node {
         switch_status_client_ =
             create_client<status_interfaces_pkg::srv::SwitchStatus>("/ground_station/switch_status",
                                                                     rmw_qos_profile_services_default, cbg_fsm_);
-        // actuator_control 服务回调里有 sleep_for(200ms)，必须放到独立组，避免阻塞 FSM/传感器/指令组。
+        // actuator_control 服务与 actuator_timer_ 共享 cbg_service_：
+        // 二者都会调用 publish_vehicle_command，互斥执行可避免服务更新设定值与定时重发交叉。
         actuator_control_srv_ = create_service<status_interfaces_pkg::srv::ActuatorControl>(
             "/uav_offboard_fsm/actuator_control",
             std::bind(&UavOffboardFsm::handleActuatorControl, this,
@@ -143,6 +144,11 @@ class UavOffboardFsm : public rclcpp::Node {
         timer_ = create_wall_timer(std::chrono::milliseconds(control_loop_period_ms_),
                                    std::bind(&UavOffboardFsm::controlLoopOnTimer, this),
                                    cbg_fsm_);
+        // 5Hz 持续向 FMU 重发当前 actuator 设定值；与 actuator_control 服务共用 cbg_service_，
+        // 因二者都会触发 publish_vehicle_command，互斥执行避免与服务回调交叉。
+        actuator_timer_ = create_wall_timer(std::chrono::milliseconds(200),
+                                            std::bind(&UavOffboardFsm::publishActuatorCommand, this),
+                                            cbg_service_);
 
         RCLCPP_INFO(get_logger(),
                     LOG_COLOR_GREEN "uav_offboard_fsm ready | initial=%s loop=%dms; waiting for SELF_CHECK" LOG_COLOR_RESET,
@@ -220,6 +226,7 @@ class UavOffboardFsm : public rclcpp::Node {
 
     rclcpp::Subscription<traj_offboard::msg::TrajCompleteFlag>::SharedPtr traj_complete_flag_sub_;
     rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::TimerBase::SharedPtr actuator_timer_;
 
     std::atomic<ControlState> control_state_{ControlState::SELF_CHECK};
     std::atomic<int> last_main_task_status_{-1};
@@ -230,7 +237,7 @@ class UavOffboardFsm : public rclcpp::Node {
     //  cbg_fsm_      —— 状态机主循环、状态发布定时器、客户端响应（共用 fsm_mutex_，互斥即可）
     //  cbg_sensor_   —— 高频传感器订阅（位置、home、测距、ruckig 反馈、轨迹完成标志）
     //  cbg_command_  —— 上层/键盘指令订阅
-    //  cbg_service_  —— actuator_control 服务（含 200ms sleep_for，独立组避免阻塞 FSM）
+    //  cbg_service_  —— actuator_control 服务与 actuator_timer_（共用，避免向 FMU 的重发与服务更新交叉）
     rclcpp::CallbackGroup::SharedPtr cbg_fsm_;
     rclcpp::CallbackGroup::SharedPtr cbg_sensor_;
     rclcpp::CallbackGroup::SharedPtr cbg_command_;
@@ -330,6 +337,13 @@ class UavOffboardFsm : public rclcpp::Node {
     bool active_target_sent_{false};
     bool target_request_pending_{false};
     rclcpp::Time last_target_sent_time_{0, 0, RCL_ROS_TIME};
+
+    // 由 actuator_timer_ 以 5Hz 持续向 FMU 重发 VEHICLE_CMD_DO_SET_ACTUATOR；
+    // 初值 (0, -1) 等价于上一版本服务回调里的"初始化"指令；handleActuatorControl 只更新这两个值。
+    std::atomic<float> actuator_close{0.0f};
+    std::atomic<float> actuator_cut{-1.0f};
+
+    void publishActuatorCommand();
 
     void controlLoopOnTimer();
     void onStateEntry(ControlState state);
@@ -902,11 +916,12 @@ void UavOffboardFsm::publish_vehicle_command(uint16_t command, float param1, flo
 
     if (vehicle_command_publisher_->get_subscription_count() > 0) {
         vehicle_command_publisher_->publish(msg);
-        RCLCPP_INFO(this->get_logger(),
-                   LOG_COLOR_GREEN "Published vehicle_command - command: %d, param1: %.2f, param2: %.2f" LOG_COLOR_RESET,
+        RCLCPP_DEBUG(this->get_logger(),
+                   "Published vehicle_command - command: %d, param1: %.2f, param2: %.2f",
                     command, param1, param2);
     } else {
-        RCLCPP_WARN(this->get_logger(), "No subscribers for /fmu/in/vehicle_command");
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *get_clock(), log_throttle_ms_,
+                             "No subscribers for /fmu/in/vehicle_command");
     }
 }
 
@@ -914,33 +929,28 @@ void UavOffboardFsm::handleActuatorControl(
     const std::shared_ptr<status_interfaces_pkg::srv::ActuatorControl::Request> request,
     std::shared_ptr<status_interfaces_pkg::srv::ActuatorControl::Response> response)
 {
-    // if (control_state_.load() != ControlState::UAV_HOLD) {
-    //     RCLCPP_WARN(get_logger(),
-    //                 "ActuatorControl rejected | not in UAV_HOLD (current=%d)",
-    //                 static_cast<int>(control_state_.load()));
-    //     response->success = false;
-    //     return;
-    // }
-    
     if (vehicle_command_publisher_->get_subscription_count() == 0) {
         RCLCPP_WARN(get_logger(), "ActuatorControl rejected | no FMU subscriber");
         response->success = false;
         return;
     }
-    // first param 0 to initialize, then 1 to close/open gripper, -1 to cut/release
-    publish_vehicle_command(
-        px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_ACTUATOR, 0.0f, -1.0f);
-    RCLCPP_INFO(get_logger(),  "ActuatorControl | initialization command sent to FMU" );
-    // Ensure a short delay between the initialization command and the actual control command to allow the FMU to process the first command.
-    rclcpp::sleep_for(std::chrono::milliseconds(200));
-    publish_vehicle_command(
-        px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_ACTUATOR,
-        request->close ? 1.0f : -1.0f,
-        request->cut ? 1.0f : -1.0f);
+    // 仅更新设定值，由 actuator_timer_ 以 5Hz 持续重发给 FMU；
+    // 初始化序列 (close=0, cut=-1) 由构造时的默认值在节点启动后即开始周期下发。
+    actuator_close.store(request->close ? 1.0f : -1.0f);
+    actuator_cut.store(request->cut ? 1.0f : -1.0f);
     response->success = true;
     RCLCPP_INFO(get_logger(),
-                 LOG_COLOR_BLUE "ActuatorControl | close=%d cut=%d -> FMU sent" LOG_COLOR_RESET,
+                 LOG_COLOR_BLUE "ActuatorControl | close=%d cut=%d -> setpoint updated" LOG_COLOR_RESET,
                 static_cast<int>(request->close), static_cast<int>(request->cut));
+}
+
+// 5hz timer 回调函数：持续发布当前的执行器命令，确保 FMU 能及时收到最新的指令状态。
+void UavOffboardFsm::publishActuatorCommand()
+{
+    publish_vehicle_command(
+        px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_ACTUATOR,
+        actuator_close.load(),
+        actuator_cut.load());
 }
 
 // 航点序列处理：负责发送当前航点、等待到达、推进索引，并在序列全部完成时返回 true。
