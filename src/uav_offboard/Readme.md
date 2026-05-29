@@ -471,3 +471,8 @@ sqlite3 online_traj_19700101_080654_0.db3 ".recover" | sqlite3 recovered.db3
 ```bash
 ros2 bag reindex /path/to/bag_folder -s sqlite3
 ```
+
+stdbuf -oL ros2 topic bw /camera/camera/relay/color/image_raw | ts '[%Y-%m-%d %H:%M:%S]' | tee bw9.log
+
+nohup ./netlog.sh > /dev/null 2>&1 &
+
