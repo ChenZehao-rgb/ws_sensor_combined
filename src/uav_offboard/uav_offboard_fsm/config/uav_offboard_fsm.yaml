@@ -13,6 +13,31 @@ uav_offboard_fsm:
       5.0, 5.0, 5.0, 1.57079632679
     ]
 
+    # UAV_HOLD 内末端期望位置持续调整。xy/z 可独立开启；都为 true 时持续调整 xyz。
+    use_xy_adjust: false
+    use_z_adjust: false
+
+    # 末端期望点新鲜度超时，单位 s。
+    hold_adjust_pos_des_timeout_s: 1.0
+
+    # camera_base FLU(front-left-up) -> UAV body FRD(front-right-down)，row-major。
+    hold_adjust_camera_to_body_rotation: [
+      1.0, 0.0, 0.0,
+      0.0, -1.0, 0.0,
+      0.0, 0.0, -1.0
+    ]
+
+    # camera_base 原点到 UAV body 原点的平移，表达在 UAV body FRD 轴，单位 m。
+    hold_adjust_camera_to_body_translation_m: [0.0, 0.0, 0.0]
+
+    # 机械臂末端工作空间，表达在 UAV body FRD 轴，单位 m：[x_forward, y_right, z_down]。
+    # 注意 FSM 航点 z 是 ENU-up，代码下发高度调整时会对 FRD 的 z_down 自动取反。
+    manipulator_workspace_min_body: [1.0, -0.4, 0.1]
+    manipulator_workspace_max_body: [1.35, 0.4, 0.45]
+
+    # UAV_HOLD 调整段 Ruckig 平动速度上限；分量 <=0 表示沿用全局默认。
+    hold_adjust_max_velocity_xyz: [0.0, 0.0, 0.0]
+
     # 外部任务状态中表示允许执行任务的字符串。
     mission_state_enabled_aliases: ["ENABLED", "RUNNING", "AUTO"]
 

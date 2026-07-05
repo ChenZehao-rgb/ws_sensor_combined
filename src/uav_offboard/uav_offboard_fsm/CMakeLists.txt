@@ -11,6 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(traj_offboard REQUIRED)
@@ -32,6 +33,7 @@ endif()
 add_executable(uav_offboard_fsm_node src/uav_offboard_fsm.cpp)
 ament_target_dependencies(uav_offboard_fsm_node
   rclcpp
+  geometry_msgs
   sensor_msgs
   px4_msgs
   traj_offboard
