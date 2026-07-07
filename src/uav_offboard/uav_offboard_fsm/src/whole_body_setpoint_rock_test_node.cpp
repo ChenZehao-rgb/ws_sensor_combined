@@ -1,0 +1,172 @@
+#include <rclcpp/rclcpp.hpp>
+
+#include <px4_msgs/msg/trajectory_setpoint.hpp>
+#include <px4_msgs/msg/vehicle_local_position.hpp>
+
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <vector>
+
+class WholeBodySetpointRockTest : public rclcpp::Node {
+  public:
+    WholeBodySetpointRockTest() : rclcpp::Node("whole_body_setpoint_rock_test")
+    {
+        output_topic_ = declare_parameter<std::string>(
+            "output_topic", "/whole_body_planner/uav_setpoint");
+        local_position_topic_ = declare_parameter<std::string>(
+            "local_position_topic", "/fmu/out/vehicle_local_position");
+        rate_hz_ = declare_parameter<double>("rate_hz", 20.0);
+        amplitude_m_ = declare_parameter<double>("amplitude_m", 0.2);
+        frequency_hz_ = declare_parameter<double>("frequency_hz", 0.2);
+        axis_ = declare_parameter<std::string>("axis", "east");
+        use_manual_base_ = declare_parameter<bool>("use_manual_base", false);
+        manual_base_ned_ = parseManualBase(
+            declare_parameter<std::vector<double>>("manual_base_ned", {0.0, 0.0, 0.0}));
+
+        if (rate_hz_ <= 0.0) {
+            RCLCPP_WARN(get_logger(), "Invalid rate_hz=%.3f, using 20Hz", rate_hz_);
+            rate_hz_ = 20.0;
+        }
+        if (frequency_hz_ < 0.0) {
+            RCLCPP_WARN(get_logger(), "Invalid frequency_hz=%.3f, using 0.2Hz", frequency_hz_);
+            frequency_hz_ = 0.2;
+        }
+        axis_index_ = axisToIndex(axis_);
+        if (axis_index_ < 0) {
+            RCLCPP_WARN(get_logger(), "Invalid axis=%s, using east", axis_.c_str());
+            axis_ = "east";
+            axis_index_ = 1;
+        }
+
+        setpoint_pub_ = create_publisher<px4_msgs::msg::TrajectorySetpoint>(output_topic_, 10);
+
+        auto sensor_qos = rclcpp::SensorDataQoS();
+        local_position_sub_ = create_subscription<px4_msgs::msg::VehicleLocalPosition>(
+            local_position_topic_, sensor_qos,
+            std::bind(&WholeBodySetpointRockTest::handleVehicleLocalPosition, this,
+                      std::placeholders::_1));
+
+        if (use_manual_base_) {
+            base_ned_ = manual_base_ned_;
+            base_ready_ = true;
+            start_time_ = now();
+            RCLCPP_INFO(get_logger(),
+                        "Rock test manual base | ned=(%.3f, %.3f, %.3f)",
+                        base_ned_[0], base_ned_[1], base_ned_[2]);
+        }
+
+        const auto period = std::chrono::duration<double>(1.0 / rate_hz_);
+        timer_ = create_wall_timer(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(period),
+            std::bind(&WholeBodySetpointRockTest::publishSetpoint, this));
+
+        RCLCPP_INFO(get_logger(),
+                    "WholeBodySetpointRockTest ready | out=%s base=%s axis=%s amplitude=%.3fm frequency=%.3fHz rate=%.1fHz",
+                    output_topic_.c_str(),
+                    use_manual_base_ ? "manual_base_ned" : local_position_topic_.c_str(),
+                    axis_.c_str(), amplitude_m_, frequency_hz_, rate_hz_);
+    }
+
+  private:
+    static std::array<double, 3> parseManualBase(const std::vector<double> & value)
+    {
+        if (value.size() != 3) {
+            return {0.0, 0.0, 0.0};
+        }
+        return {value[0], value[1], value[2]};
+    }
+
+    static int axisToIndex(const std::string & axis)
+    {
+        if (axis == "north" || axis == "x" || axis == "n") {
+            return 0;
+        }
+        if (axis == "east" || axis == "y" || axis == "e") {
+            return 1;
+        }
+        if (axis == "down" || axis == "z" || axis == "d") {
+            return 2;
+        }
+        return -1;
+    }
+
+    void handleVehicleLocalPosition(
+        const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg)
+    {
+        if (use_manual_base_ || base_ready_) {
+            return;
+        }
+        if (!std::isfinite(msg->x) || !std::isfinite(msg->y) || !std::isfinite(msg->z)) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                                 "Waiting valid vehicle local position");
+            return;
+        }
+
+        base_ned_ = {
+            static_cast<double>(msg->x),
+            static_cast<double>(msg->y),
+            static_cast<double>(msg->z)};
+        base_ready_ = true;
+        start_time_ = now();
+        RCLCPP_INFO(get_logger(),
+                    "Rock test captured base from vehicle_local_position | ned=(%.3f, %.3f, %.3f)",
+                    base_ned_[0], base_ned_[1], base_ned_[2]);
+    }
+
+    void publishSetpoint()
+    {
+        if (!base_ready_) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                                 "Rock test waiting base position from %s",
+                                 local_position_topic_.c_str());
+            return;
+        }
+
+        const double t = (now() - start_time_).seconds();
+        constexpr double kPi = 3.14159265358979323846;
+        const double offset = amplitude_m_ * std::sin(2.0 * kPi * frequency_hz_ * t);
+        auto target = base_ned_;
+        target[static_cast<std::size_t>(axis_index_)] += offset;
+
+        px4_msgs::msg::TrajectorySetpoint msg{};
+        msg.timestamp = now().nanoseconds() / 1000;
+        msg.position = {
+            static_cast<float>(target[0]),
+            static_cast<float>(target[1]),
+            static_cast<float>(target[2])};
+        msg.velocity = {0.0f, 0.0f, 0.0f};
+        msg.acceleration = {0.0f, 0.0f, 0.0f};
+        msg.yaw = 0.0f;
+        msg.yawspeed = 0.0f;
+        setpoint_pub_->publish(msg);
+    }
+
+    std::string output_topic_;
+    std::string local_position_topic_;
+    std::string axis_;
+    double rate_hz_{20.0};
+    double amplitude_m_{0.2};
+    double frequency_hz_{0.2};
+    bool use_manual_base_{false};
+    bool base_ready_{false};
+    int axis_index_{1};
+    std::array<double, 3> manual_base_ned_{0.0, 0.0, 0.0};
+    std::array<double, 3> base_ned_{0.0, 0.0, 0.0};
+    rclcpp::Time start_time_{0, 0, RCL_ROS_TIME};
+
+    rclcpp::Publisher<px4_msgs::msg::TrajectorySetpoint>::SharedPtr setpoint_pub_;
+    rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr local_position_sub_;
+    rclcpp::TimerBase::SharedPtr timer_;
+};
+
+int main(int argc, char ** argv)
+{
+    rclcpp::init(argc, argv);
+    rclcpp::spin(std::make_shared<WholeBodySetpointRockTest>());
+    rclcpp::shutdown();
+    return 0;
+}

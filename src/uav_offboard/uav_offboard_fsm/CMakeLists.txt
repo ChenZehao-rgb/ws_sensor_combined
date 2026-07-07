@@ -11,7 +11,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(traj_offboard REQUIRED)
@@ -33,7 +32,6 @@ endif()
 add_executable(uav_offboard_fsm_node src/uav_offboard_fsm.cpp)
 ament_target_dependencies(uav_offboard_fsm_node
   rclcpp
-  geometry_msgs
   sensor_msgs
   px4_msgs
   traj_offboard
@@ -53,6 +51,12 @@ ament_target_dependencies(ground_station_sim_node
   status_interfaces_pkg
 )
 
+add_executable(whole_body_setpoint_rock_test_node src/whole_body_setpoint_rock_test_node.cpp)
+ament_target_dependencies(whole_body_setpoint_rock_test_node
+  rclcpp
+  px4_msgs
+)
+
 target_include_directories(uav_offboard_fsm_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -61,6 +65,7 @@ install(TARGETS
   uav_offboard_fsm_node
   uav_keyboard_control_node
   ground_station_sim_node
+  whole_body_setpoint_rock_test_node
   DESTINATION lib/${PROJECT_NAME})
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/include")
