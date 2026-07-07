@@ -715,8 +715,8 @@ void UavOffboardFsm::handleSelfCheck()
     }
 
     if (ready_for_takeoff_) {
-        RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
-                              "SELF_CHECK | uavCheckSucceed=1; waiting for command WAIT_TASK_ENABLE_AUTH");
+        RCLCPP_DEBUG_ONCE(get_logger(),
+                          "SELF_CHECK | uavCheckSucceed=1; waiting for command WAIT_TASK_ENABLE_AUTH");
         return;
     }
 
@@ -1933,12 +1933,14 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
                 uav_adjust_succeed_ = true;
                 arm_config_prepared_ = true;
                 transitionTo(ControlState::UAV_HOLD);
-                RCLCPP_INFO(get_logger(), "Command accepted | ARM_CONFIG_PREP -> UAV_HOLD");
+                RCLCPP_DEBUG_ONCE(get_logger(),
+                                  LOG_COLOR_GREEN "Command accepted | ARM_CONFIG_PREP -> UAV_HOLD" LOG_COLOR_RESET);
                 return;
             }
             if (state == ControlState::UAV_HOLD && uav_adjust_succeed_) {
                 arm_config_prepared_ = true;
-                RCLCPP_INFO(get_logger(), "Command accepted | ARM_CONFIG_PREP waiting SAMPL_OPERA");
+                RCLCPP_DEBUG_ONCE(get_logger(),
+                                  LOG_COLOR_GREEN "Command accepted | ARM_CONFIG_PREP waiting SAMPL_OPERA" LOG_COLOR_RESET);
                 return;
             }
             REJECT_WARN(
@@ -1950,7 +1952,7 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
                 if (!sampl_opera_completed_) {
                     sampl_opera_completed_ = true;
                 }
-                RCLCPP_INFO(get_logger(), "Command accepted | SAMPL_OPERA waiting UAV_PRE_BACK_HOME");
+                RCLCPP_DEBUG(get_logger(), "Command accepted | SAMPL_OPERA waiting UAV_PRE_BACK_HOME");
                 return;
             }
             REJECT_WARN(

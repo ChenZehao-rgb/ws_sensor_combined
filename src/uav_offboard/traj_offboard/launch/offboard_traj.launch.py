@@ -57,6 +57,7 @@ def generate_launch_description() -> LaunchDescription:
         '/fmu/in/offboard_control_mode',
         '/fmu/in/vehicle_command',
         '/main_task_fsm/task_states',
+        '/uav_offboard_fsm/manipulator_terminal_pos_des_camera_base',
     ]
 
     offboard_bridge = Node(

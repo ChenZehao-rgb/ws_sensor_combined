@@ -1,0 +1,3 @@
+sensor_msgs::msg::JointState  /online_traj_generator/ruckig_state 
+sensor_msgs::msg::JointState  /online_traj_generator/ruckig_command
+sensor_msgs::msg::JointState  /online_traj_generator/ruckig_targ

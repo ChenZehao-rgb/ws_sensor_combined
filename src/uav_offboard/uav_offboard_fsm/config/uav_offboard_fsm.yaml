@@ -14,7 +14,7 @@ uav_offboard_fsm:
     ]
 
     # UAV_HOLD 内末端期望位置持续调整。xy/z 可独立开启；都为 true 时持续调整 xyz。
-    use_xy_adjust: false
+    use_xy_adjust: true
     use_z_adjust: false
 
     # 末端期望点新鲜度超时，单位 s。
