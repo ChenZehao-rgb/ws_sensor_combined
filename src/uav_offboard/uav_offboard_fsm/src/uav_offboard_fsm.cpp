@@ -197,8 +197,10 @@ class UavOffboardFsm : public rclcpp::Node {
         double yaw;
     };
     using Vector3 = std::array<double, 3>;
-    struct TimedVector3 {
-        Vector3 value;
+    struct TimedHoldSetpoint {
+        Vector3 position;
+        Vector3 velocity;
+        Vector3 acceleration;
         rclcpp::Time stamp;
     };
 
@@ -293,6 +295,8 @@ class UavOffboardFsm : public rclcpp::Node {
     std::optional<double> latest_distance_m_;
     rclcpp::Time last_distance_sensor_time_{0, 0, RCL_ROS_TIME};
     std::optional<Vector3> latest_hold_uav_setpoint_;
+    std::optional<Vector3> latest_hold_uav_velocity_;
+    std::optional<Vector3> latest_hold_uav_acceleration_;
     rclcpp::Time last_hold_pos_des_time_{0, 0, RCL_ROS_TIME};
 
     traj_offboard::msg::TrajCompleteFlag traj_complete_flag_;
@@ -453,7 +457,7 @@ class UavOffboardFsm : public rclcpp::Node {
     bool handleUavHoldAdjust();
     bool generateHoldAdjustWaypoints();
     bool isHoldAdjustTargetUpdateNeeded(const Waypoint & target) const;
-    std::optional<TimedVector3> latestFreshHoldUavSetpoint();
+    std::optional<TimedHoldSetpoint> latestFreshHoldUavSetpoint();
     void generateRetreatWaypoints();
     Waypoint offsetBodyFrame(const Waypoint & base, double forward_m, double right_m) const;
 
@@ -945,10 +949,13 @@ bool UavOffboardFsm::handleUavHoldAdjust()
                                  "UAV_HOLD adjust pending | waiting fresh whole_body_planner uav setpoint");
             return false;
         }
+
         if (!target_request_pending_ &&
             (!hold_adjust_stale_hold_sent_ || !active_target_sent_)) {
             const auto hold_target = currentOrHoverWaypoint();
             target_max_velocity_xyz_ = hold_adjust_max_velocity_xyz_;
+            target_velocity_ = {0.0, 0.0, 0.0};
+            target_acceleration_ = {0.0, 0.0, 0.0};
             setActiveTarget(hold_target);
             hold_adjust_stale_hold_sent_ = sendActiveTarget(true);
             if (hold_adjust_stale_hold_sent_) {
@@ -980,7 +987,7 @@ bool UavOffboardFsm::handleUavHoldAdjust()
         return true;
     }
 
-    hold_adjust_desired_local_ = desired_setpoint->value;
+    hold_adjust_desired_local_ = desired_setpoint->position;
     if (!generateHoldAdjustWaypoints()) {
         hold_adjust_last_planned_pos_des_time_ = desired_setpoint->stamp;
         return true;
@@ -1003,6 +1010,18 @@ bool UavOffboardFsm::handleUavHoldAdjust()
     }
 
     target_max_velocity_xyz_ = hold_adjust_max_velocity_xyz_;
+    target_velocity_ = desired_setpoint->velocity;
+    target_acceleration_ = desired_setpoint->acceleration;
+    if (!use_xy_adjust_) {
+        target_velocity_[0] = 0.0;
+        target_velocity_[1] = 0.0;
+        target_acceleration_[0] = 0.0;
+        target_acceleration_[1] = 0.0;
+    }
+    if (!use_z_adjust_) {
+        target_velocity_[2] = 0.0;
+        target_acceleration_[2] = 0.0;
+    }
     setActiveTarget(target);
     if (!sendActiveTarget(true)) {
         clearActiveTarget();
@@ -1015,8 +1034,8 @@ bool UavOffboardFsm::handleUavHoldAdjust()
 
     RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 1000,
                           "UAV_HOLD realtime target sent | desired_fsm=(%.3f, %.3f, %.3f)",
-                          desired_setpoint->value[0], desired_setpoint->value[1],
-                          desired_setpoint->value[2]);
+                          desired_setpoint->position[0], desired_setpoint->position[1],
+                          desired_setpoint->position[2]);
     return true;
 }
 
@@ -1103,20 +1122,28 @@ bool UavOffboardFsm::isHoldAdjustTargetUpdateNeeded(const Waypoint & target) con
            std::abs(wrapAngle(target.yaw - active_target_->yaw)) > yaw_tolerance_;
 }
 
-std::optional<UavOffboardFsm::TimedVector3> UavOffboardFsm::latestFreshHoldUavSetpoint()
+std::optional<UavOffboardFsm::TimedHoldSetpoint> UavOffboardFsm::latestFreshHoldUavSetpoint()
 {
     std::optional<Vector3> pos_copy;
+    std::optional<Vector3> vel_copy;
+    std::optional<Vector3> acc_copy;
     rclcpp::Time stamp{0, 0, RCL_ROS_TIME};
     {
         std::lock_guard<std::mutex> lock(latest_state_mutex_);
         pos_copy = latest_hold_uav_setpoint_;
+        vel_copy = latest_hold_uav_velocity_;
+        acc_copy = latest_hold_uav_acceleration_;
         stamp = last_hold_pos_des_time_;
     }
     if (!pos_copy || stamp.nanoseconds() == 0 ||
         (now() - stamp).seconds() > hold_adjust_pos_des_timeout_s_) {
         return std::nullopt;
     }
-    return TimedVector3{*pos_copy, stamp};
+    return TimedHoldSetpoint{
+        *pos_copy,
+        vel_copy.value_or(Vector3{0.0, 0.0, 0.0}),
+        acc_copy.value_or(Vector3{0.0, 0.0, 0.0}),
+        stamp};
 }
 
 // 后退处理：APPROACH 的逆过程。沿机体系后方慢速退回安全距离，完成后允许执行 BACK_HOME。
@@ -2285,10 +2312,21 @@ void UavOffboardFsm::handleManualControlSetpoint(
 void UavOffboardFsm::handleWholeBodyUavSetpoint(
     const px4_msgs::msg::TrajectorySetpoint::SharedPtr msg)
 {
+    const auto finiteOrZero = [](float value) -> double {
+        return std::isfinite(value) ? static_cast<double>(value) : 0.0;
+    };
     const Vector3 pos_ned{
         static_cast<double>(msg->position[0]),
         static_cast<double>(msg->position[1]),
         static_cast<double>(msg->position[2])};
+    const Vector3 vel_ned{
+        finiteOrZero(msg->velocity[0]),
+        finiteOrZero(msg->velocity[1]),
+        finiteOrZero(msg->velocity[2])};
+    const Vector3 acc_ned{
+        finiteOrZero(msg->acceleration[0]),
+        finiteOrZero(msg->acceleration[1]),
+        finiteOrZero(msg->acceleration[2])};
     if (!std::isfinite(pos_ned[0]) || !std::isfinite(pos_ned[1]) ||
         !std::isfinite(pos_ned[2])) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
@@ -2297,6 +2335,8 @@ void UavOffboardFsm::handleWholeBodyUavSetpoint(
     }
 
     Vector3 pos_fsm{};
+    Vector3 vel_fsm{};
+    Vector3 acc_fsm{};
     bool home_valid = false;
     const auto stamp = now();
     {
@@ -2307,7 +2347,17 @@ void UavOffboardFsm::handleWholeBodyUavSetpoint(
                 pos_ned[1] - home_y_,
                 pos_ned[0] - home_x_,
                 -pos_ned[2] + home_z_};
+            vel_fsm = {
+                vel_ned[1],
+                vel_ned[0],
+                -vel_ned[2]};
+            acc_fsm = {
+                acc_ned[1],
+                acc_ned[0],
+                -acc_ned[2]};
             latest_hold_uav_setpoint_ = pos_fsm;
+            latest_hold_uav_velocity_ = vel_fsm;
+            latest_hold_uav_acceleration_ = acc_fsm;
             last_hold_pos_des_time_ = stamp;
         }
     }
@@ -2317,9 +2367,10 @@ void UavOffboardFsm::handleWholeBodyUavSetpoint(
         return;
     }
     RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), hovering_log_throttle_ms_,
-                          "Whole body UAV setpoint received | ned=(%.3f, %.3f, %.3f) fsm=(%.3f, %.3f, %.3f)",
+                          "Whole body UAV setpoint received | ned=(%.3f, %.3f, %.3f) fsm=(%.3f, %.3f, %.3f) vel_fsm=(%.3f, %.3f, %.3f)",
                           pos_ned[0], pos_ned[1], pos_ned[2],
-                          pos_fsm[0], pos_fsm[1], pos_fsm[2]);
+                          pos_fsm[0], pos_fsm[1], pos_fsm[2],
+                          vel_fsm[0], vel_fsm[1], vel_fsm[2]);
 }
 
 // void UavOffboardFsm::handleActuatorOutputs(const px4_msgs::msg::ActuatorOutputs::SharedPtr msg)

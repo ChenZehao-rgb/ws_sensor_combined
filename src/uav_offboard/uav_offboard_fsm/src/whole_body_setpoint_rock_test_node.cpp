@@ -53,7 +53,7 @@ class WholeBodySetpointRockTest : public rclcpp::Node {
         if (use_manual_base_) {
             base_ned_ = manual_base_ned_;
             base_ready_ = true;
-            start_time_ = now();
+            waveform_started_ = false;
             RCLCPP_INFO(get_logger(),
                         "Rock test manual base | ned=(%.3f, %.3f, %.3f)",
                         base_ned_[0], base_ned_[1], base_ned_[2]);
@@ -111,7 +111,7 @@ class WholeBodySetpointRockTest : public rclcpp::Node {
             static_cast<double>(msg->y),
             static_cast<double>(msg->z)};
         base_ready_ = true;
-        start_time_ = now();
+        waveform_started_ = false;
         RCLCPP_INFO(get_logger(),
                     "Rock test captured base from vehicle_local_position | ned=(%.3f, %.3f, %.3f)",
                     base_ned_[0], base_ned_[1], base_ned_[2]);
@@ -126,11 +126,26 @@ class WholeBodySetpointRockTest : public rclcpp::Node {
             return;
         }
 
-        const double t = (now() - start_time_).seconds();
+        const auto now_time = now();
+        if (!waveform_started_) {
+            start_time_ = now_time;
+            waveform_started_ = true;
+        }
+        const double t = (now_time - start_time_).seconds();
         constexpr double kPi = 3.14159265358979323846;
-        const double offset = amplitude_m_ * std::sin(2.0 * kPi * frequency_hz_ * t);
+        const double omega = 2.0 * kPi * frequency_hz_;
+        const double phase = omega * t;
+        const double offset = amplitude_m_ * std::cos(phase);
+        const double velocity = -amplitude_m_ * omega * std::sin(phase);
+        const double acceleration = -amplitude_m_ * omega * omega * std::cos(phase);
         auto target = base_ned_;
         target[static_cast<std::size_t>(axis_index_)] += offset;
+        std::array<float, 3> velocity_ned{0.0f, 0.0f, 0.0f};
+        std::array<float, 3> acceleration_ned{0.0f, 0.0f, 0.0f};
+        velocity_ned[static_cast<std::size_t>(axis_index_)] =
+            static_cast<float>(velocity);
+        acceleration_ned[static_cast<std::size_t>(axis_index_)] =
+            static_cast<float>(acceleration);
 
         px4_msgs::msg::TrajectorySetpoint msg{};
         msg.timestamp = now().nanoseconds() / 1000;
@@ -138,8 +153,8 @@ class WholeBodySetpointRockTest : public rclcpp::Node {
             static_cast<float>(target[0]),
             static_cast<float>(target[1]),
             static_cast<float>(target[2])};
-        msg.velocity = {0.0f, 0.0f, 0.0f};
-        msg.acceleration = {0.0f, 0.0f, 0.0f};
+        msg.velocity = velocity_ned;
+        msg.acceleration = acceleration_ned;
         msg.yaw = 0.0f;
         msg.yawspeed = 0.0f;
         setpoint_pub_->publish(msg);
@@ -157,6 +172,7 @@ class WholeBodySetpointRockTest : public rclcpp::Node {
     std::array<double, 3> manual_base_ned_{0.0, 0.0, 0.0};
     std::array<double, 3> base_ned_{0.0, 0.0, 0.0};
     rclcpp::Time start_time_{0, 0, RCL_ROS_TIME};
+    bool waveform_started_{false};
 
     rclcpp::Publisher<px4_msgs::msg::TrajectorySetpoint>::SharedPtr setpoint_pub_;
     rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr local_position_sub_;

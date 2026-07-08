@@ -27,7 +27,8 @@ uav_offboard_fsm:
     hold_adjust_min_update_period_s: 0.05
 
     # 目标变化小于该阈值时不重新下发，抑制高频 setpoint 抖动，单位 m。
-    hold_adjust_target_update_tolerance_m: 0.02
+    hold_adjust_target_update_tolerance_m: 0.00
+    
 
     # 单次下发目标相对当前 Ruckig 参考点的最大步长；<=0 表示关闭该轴限幅，单位 m。
     hold_adjust_max_xy_step_m: 0.5

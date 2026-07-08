@@ -9,6 +9,7 @@
 #include <px4_msgs/msg/trajectory_setpoint.hpp>
 #include <traj_offboard/srv/get_trajectory_setpoint.hpp>
 
+#include <algorithm>
 #include <cmath>
 
 #include <traj_offboard/online_traj_generator.h>
@@ -144,11 +145,6 @@ private:
     if (request->update_target) {
       updateTrajGeneratorTarg();
 #if TRAJ_OFFBOARD_HAVE_RUCKIG
-      for (std::size_t id = 0; id < STATE_NUM; id++) {
-        ruckigInput_.target_position[id] = targ_.position[id];
-        ruckigInput_.target_velocity[id] = targ_.velocity[id];
-        ruckigInput_.target_acceleration[id] = targ_.effort[id];
-      }
       // 应用本段平动速度上限覆盖：分量 >0 时替换默认 VEL_LIMIT；否则恢复默认。yaw 始终保持默认。
       using traj_generator::VEL_LIMIT;
       for (std::size_t id = 0; id < 3; id++) {
@@ -156,6 +152,33 @@ private:
         ruckigInput_.max_velocity[id] = (override_v > 0.0) ? override_v : VEL_LIMIT[id];
       }
       ruckigInput_.max_velocity[3] = VEL_LIMIT[3];
+
+      bool target_kinematics_clamped = false;
+      for (std::size_t id = 0; id < STATE_NUM; id++) {
+        ruckigInput_.target_position[id] = targ_.position[id];
+        const double raw_velocity =
+            std::isfinite(targ_.velocity[id]) ? targ_.velocity[id] : 0.0;
+        const double raw_acceleration =
+            std::isfinite(targ_.effort[id]) ? targ_.effort[id] : 0.0;
+        const double vel_limit = std::max(0.0, 0.99 * ruckigInput_.max_velocity[id]);
+        const double acc_limit = std::max(0.0, 0.99 * ruckigInput_.max_acceleration[id]);
+        const double target_velocity =
+            std::clamp(raw_velocity, -vel_limit, vel_limit);
+        const double target_acceleration =
+            std::clamp(raw_acceleration, -acc_limit, acc_limit);
+        target_kinematics_clamped =
+            target_kinematics_clamped ||
+            std::abs(target_velocity - raw_velocity) > 1e-9 ||
+            std::abs(target_acceleration - raw_acceleration) > 1e-9 ||
+            !std::isfinite(targ_.velocity[id]) ||
+            !std::isfinite(targ_.effort[id]);
+        ruckigInput_.target_velocity[id] = target_velocity;
+        ruckigInput_.target_acceleration[id] = target_acceleration;
+      }
+      if (target_kinematics_clamped) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                             "Ruckig target feed-forward clamped to current velocity/acceleration limits");
+      }
 #endif
     }
     if (!trajGenerate()) {
