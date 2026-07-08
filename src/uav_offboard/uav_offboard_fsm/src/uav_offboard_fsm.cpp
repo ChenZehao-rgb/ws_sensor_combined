@@ -63,6 +63,9 @@ class UavOffboardFsm : public rclcpp::Node {
         }
         use_xy_adjust_ = declare_parameter<bool>("use_xy_adjust", use_xy_adjust_);
         use_z_adjust_ = declare_parameter<bool>("use_z_adjust", use_z_adjust_);
+        direct_to_uav_hold_after_self_check_ =
+            declare_parameter<bool>("direct_to_uav_hold_after_self_check",
+                                    direct_to_uav_hold_after_self_check_);
         hold_adjust_pos_des_timeout_s_ =
             declare_parameter<double>("hold_adjust_pos_des_timeout_s", hold_adjust_pos_des_timeout_s_);
         hold_adjust_min_update_period_s_ =
@@ -346,11 +349,12 @@ class UavOffboardFsm : public rclcpp::Node {
     double sample_adjust_right_m_{0.0};
     double sample_adjust_z_offset_m_{0.0};
     double sample_adjust_yaw_offset_rad_{0.0};
+    bool direct_to_uav_hold_after_self_check_{false};
     // UAV_HOLD 内 whole_body_planner 的 UAV 期望位置持续调整；xy/z 可独立开启。
     bool use_xy_adjust_{false};
     bool use_z_adjust_{false};
     double hold_adjust_pos_des_timeout_s_{1.0};
-    double hold_adjust_min_update_period_s_{0.05};
+    double hold_adjust_min_update_period_s_{0.0};
     double hold_adjust_target_update_tolerance_m_{0.02};
     double hold_adjust_max_xy_step_m_{0.5};
     double hold_adjust_max_z_step_m_{0.3};
@@ -1756,13 +1760,30 @@ void UavOffboardFsm::handleParsedCommand(CommandType command_type, const std::st
 
     if (command_type == CommandType::WAIT_TASK_ENABLE_AUTH) {
         if (state == ControlState::SELF_CHECK && ready_for_takeoff_) {
-            transitionTo(ControlState::UAV_START);
-            RCLCPP_INFO(get_logger(), "Command accepted | WAIT_TASK_ENABLE_AUTH -> UAV_START");
-    } else {
-        REJECT_WARN(
-                    "Command rejected | WAIT_TASK_ENABLE_AUTH current=%s uavCheckSucceed=%s",
-                    stateToString(state).c_str(), ready_for_takeoff_ ? "true" : "false");
-    }
+            if (direct_to_uav_hold_after_self_check_) {
+                ready_for_transit_ = true;
+                is_arrived_task_aera_ = true;
+                adjust_completed_ = true;
+                uav_search_succeed_ = true;
+                approach_completed_ = true;
+                uav_adjust_succeed_ = true;
+                arm_config_prepared_ = false;
+                sampl_opera_completed_ = false;
+                targ_got_confirm_pending_ = false;
+                task_term_confirm_pending_ = false;
+                clearActiveTarget();
+                transitionTo(ControlState::UAV_HOLD);
+                RCLCPP_INFO(get_logger(),
+                            LOG_COLOR_GREEN "Command accepted | WAIT_TASK_ENABLE_AUTH -> UAV_HOLD direct mode" LOG_COLOR_RESET);
+            } else {
+                transitionTo(ControlState::UAV_START);
+                RCLCPP_INFO(get_logger(), "Command accepted | WAIT_TASK_ENABLE_AUTH -> UAV_START");
+            }
+        } else {
+            REJECT_WARN(
+                        "Command rejected | WAIT_TASK_ENABLE_AUTH current=%s uavCheckSucceed=%s",
+                        stateToString(state).c_str(), ready_for_takeoff_ ? "true" : "false");
+        }
         return;
     }
 

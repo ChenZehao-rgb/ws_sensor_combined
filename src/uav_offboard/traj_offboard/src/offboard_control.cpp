@@ -748,7 +748,12 @@ void OffboardControlBridge::controlLoopOnTimer() {
                 break;
             }
             // if fsm switched state
-            if(offboard_state_.data == "UAV_START") {
+            if(offboard_state_.data == "UAV_HOLD") {
+                takeoff_complete_ = true;
+                flight_state_ = FlightState::TRAJECTORY_FOLLOWING;
+                RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "Bridge state -> TRAJECTORY_FOLLOWING | direct trigger=%s" LOG_COLOR_RESET,
+                            offboard_state_.data.c_str());
+            } else if(offboard_state_.data == "UAV_START") {
                 flight_state_ = FlightState::TAKEOFF_YAW_ONLY;
                 RCLCPP_INFO(get_logger(), LOG_COLOR_GREEN "Bridge state -> TAKEOFF_YAW_ONLY | trigger=%s manual offboard active, aligning yaw before takeoff" LOG_COLOR_RESET,
                             offboard_state_.data.c_str());
@@ -837,8 +842,7 @@ void OffboardControlBridge::controlLoopOnTimer() {
                 if (last_cmd_time_.nanoseconds() != 0) {
                     RCLCPP_DEBUG_THROTTLE(get_logger(), *this->get_clock(), 5000,
                                           "Trajectory following | holding setpoint");
-                    last_cmd_ = publishConvertedSetpoint(last_cmd_);
-                    last_cmd_time_ = this->now();
+                    publish_takeoff_setpoint(last_cmd_);
                 } else {
                     RCLCPP_DEBUG_THROTTLE(get_logger(), *this->get_clock(), 5000,
                                           "Trajectory following | waiting for first target from FSM");

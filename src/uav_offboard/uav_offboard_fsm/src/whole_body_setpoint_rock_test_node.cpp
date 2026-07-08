@@ -149,10 +149,14 @@ class WholeBodySetpointRockTest : public rclcpp::Node {
 
         px4_msgs::msg::TrajectorySetpoint msg{};
         msg.timestamp = now().nanoseconds() / 1000;
+        // target.fill(0.0f);
         msg.position = {
             static_cast<float>(target[0]),
             static_cast<float>(target[1]),
             static_cast<float>(target[2])};
+        // test vel and acc to 0.0
+        // velocity_ned.fill(0.0f);
+        // acceleration_ned.fill(0.0f);
         msg.velocity = velocity_ned;
         msg.acceleration = acceleration_ned;
         msg.yaw = 0.0f;
