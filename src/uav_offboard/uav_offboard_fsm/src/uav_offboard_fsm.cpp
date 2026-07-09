@@ -404,9 +404,10 @@ class UavOffboardFsm : public rclcpp::Node {
     rclcpp::Time last_target_sent_time_{0, 0, RCL_ROS_TIME};
 
     // 由 actuator_timer_ 以 5Hz 持续向 FMU 重发 VEHICLE_CMD_DO_SET_ACTUATOR；
-    // 初值 (0, -1) 等价于上一版本服务回调里的"初始化"指令；handleActuatorControl 只更新这两个值。
+    // close=0 请求先连续两个周期发送初始化值，再恢复发送实际关闭值。
     std::atomic<float> actuator_close{0.0f};
     std::atomic<float> actuator_cut{-1.0f};
+    std::atomic<int> actuator_close_init_cycles_remaining{0};
     std::atomic<bool> actuator_command_enabled_{false};
     std::atomic<bool> manual_control_setpoint_received_{false};
 
@@ -1239,9 +1240,10 @@ void UavOffboardFsm::handleActuatorControl(
         return;
     }
     // 仅更新设定值，由 actuator_timer_ 以 5Hz 持续重发给 FMU；
-    // 初始化序列 (close=0, cut=-1) 由构造时的默认值在节点启动后即开始周期下发。
+    // close=0 时重置两个初始化周期，close=1 时取消尚未完成的初始化。
     actuator_close.store(request->close ? 1.0f : -1.0f);
     actuator_cut.store(request->cut ? 1.0f : -1.0f);
+    actuator_close_init_cycles_remaining.store(request->close ? 0 : 2);
     response->success = true;
     RCLCPP_INFO(get_logger(),
                  LOG_COLOR_BLUE "ActuatorControl | close=%d cut=%d -> setpoint updated" LOG_COLOR_RESET,
@@ -1266,10 +1268,21 @@ void UavOffboardFsm::publishActuatorCommand()
         return;
     }
 
+    const float close = actuator_close.load();
+    const float cut = actuator_cut.load();
+    if (close == -1.0f && actuator_close_init_cycles_remaining.load() > 0) {
+        publish_vehicle_command(
+            px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_ACTUATOR,
+            0.0f,
+            cut);
+        actuator_close_init_cycles_remaining.fetch_sub(1);
+        return;
+    }
+
     publish_vehicle_command(
         px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_ACTUATOR,
-        actuator_close.load(),
-        actuator_cut.load());
+        close,
+        cut);
 }
 
 // 航点序列处理：负责发送当前航点、等待到达、推进索引，并在序列全部完成时返回 true。
@@ -2344,10 +2357,10 @@ void UavOffboardFsm::handleWholeBodyUavSetpoint(
         finiteOrZero(msg->velocity[0]),
         finiteOrZero(msg->velocity[1]),
         finiteOrZero(msg->velocity[2])};
-    const Vector3 acc_ned{
-        finiteOrZero(msg->acceleration[0]),
-        finiteOrZero(msg->acceleration[1]),
-        finiteOrZero(msg->acceleration[2])};
+    // const Vector3 acc_ned{
+    //     finiteOrZero(msg->acceleration[0]),
+    //     finiteOrZero(msg->acceleration[1]),
+    //     finiteOrZero(msg->acceleration[2])};
     if (!std::isfinite(pos_ned[0]) || !std::isfinite(pos_ned[1]) ||
         !std::isfinite(pos_ned[2])) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), log_throttle_ms_,
@@ -2357,7 +2370,7 @@ void UavOffboardFsm::handleWholeBodyUavSetpoint(
 
     Vector3 pos_fsm{};
     Vector3 vel_fsm{};
-    Vector3 acc_fsm{};
+    // Vector3 acc_fsm{};
     bool home_valid = false;
     const auto stamp = now();
     {
@@ -2372,13 +2385,13 @@ void UavOffboardFsm::handleWholeBodyUavSetpoint(
                 vel_ned[1],
                 vel_ned[0],
                 -vel_ned[2]};
-            acc_fsm = {
-                acc_ned[1],
-                acc_ned[0],
-                -acc_ned[2]};
+            // acc_fsm = {
+            //     acc_ned[1],
+            //     acc_ned[0],
+            //     -acc_ned[2]};
             latest_hold_uav_setpoint_ = pos_fsm;
             latest_hold_uav_velocity_ = vel_fsm;
-            latest_hold_uav_acceleration_ = acc_fsm;
+            // latest_hold_uav_acceleration_ = acc_fsm;
             last_hold_pos_des_time_ = stamp;
         }
     }
