@@ -37,8 +37,8 @@ uav_offboard_fsm:
 
     # 单次下发目标相对当前 Ruckig 参考点的最大步长；<=0 表示关闭该轴限幅，单位 m。
     # max velocity 也会限制实际步长; max_velocity_xy = 0.2m/s, update_period = 0.05s 时，最大步长约为 0.01m。
-    hold_adjust_max_xy_step_m: 1.0
-    hold_adjust_max_z_step_m: 1.0
+    hold_adjust_max_xy_step_m: 0.25
+    hold_adjust_max_z_step_m: 0.25
 
     # UAV_HOLD 调整段 Ruckig 平动速度上限；分量 <=0 表示沿用全局默认。
     hold_adjust_max_velocity_xyz: [0.2, 0.2, 0.3]

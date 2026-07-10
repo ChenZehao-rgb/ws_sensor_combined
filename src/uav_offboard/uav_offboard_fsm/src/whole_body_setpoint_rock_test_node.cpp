@@ -24,6 +24,8 @@ class WholeBodySetpointRockTest : public rclcpp::Node {
         amplitude_m_ = declare_parameter<double>("amplitude_m", 0.2);
         frequency_hz_ = declare_parameter<double>("frequency_hz", 0.2);
         fixed_velocity_m_s_ = declare_parameter<double>("fixed_velocity_m_s", 0.1);
+        fixed_velocity_north_m_s_ = declare_parameter<double>("fixed_velocity_north_m_s", 0.0);
+        fixed_velocity_east_m_s_ = declare_parameter<double>("fixed_velocity_east_m_s", 0.0);
         axis_ = declare_parameter<std::string>("axis", "east");
         use_manual_base_ = declare_parameter<bool>("use_manual_base", false);
         manual_base_ned_ = parseManualBase(
@@ -41,6 +43,14 @@ class WholeBodySetpointRockTest : public rclcpp::Node {
             RCLCPP_WARN(get_logger(), "Invalid fixed_velocity_m_s, using 0.1m/s");
             fixed_velocity_m_s_ = 0.1;
         }
+        if (!std::isfinite(fixed_velocity_north_m_s_)) {
+            RCLCPP_WARN(get_logger(), "Invalid fixed_velocity_north_m_s, using 0.0m/s");
+            fixed_velocity_north_m_s_ = 0.0;
+        }
+        if (!std::isfinite(fixed_velocity_east_m_s_)) {
+            RCLCPP_WARN(get_logger(), "Invalid fixed_velocity_east_m_s, using 0.0m/s");
+            fixed_velocity_east_m_s_ = 0.0;
+        }
         if (trajectory_type_ != "sine" && trajectory_type_ != "fixed_velocity") {
             RCLCPP_WARN(get_logger(),
                         "Invalid trajectory_type=%s, using sine",
@@ -48,10 +58,13 @@ class WholeBodySetpointRockTest : public rclcpp::Node {
             trajectory_type_ = "sine";
         }
         axis_index_ = axisToIndex(axis_);
-        if (axis_index_ < 0) {
+        fixed_velocity_use_north_east_ = isNorthEastAxis(axis_);
+        if (axis_index_ < 0 &&
+            !(trajectory_type_ == "fixed_velocity" && fixed_velocity_use_north_east_)) {
             RCLCPP_WARN(get_logger(), "Invalid axis=%s, using east", axis_.c_str());
             axis_ = "east";
             axis_index_ = 1;
+            fixed_velocity_use_north_east_ = false;
         }
 
         setpoint_pub_ = create_publisher<px4_msgs::msg::TrajectorySetpoint>(output_topic_, 10);
@@ -77,12 +90,22 @@ class WholeBodySetpointRockTest : public rclcpp::Node {
             std::bind(&WholeBodySetpointRockTest::publishSetpoint, this));
 
         if (trajectory_type_ == "fixed_velocity") {
-            RCLCPP_INFO(
-                get_logger(),
-                "WholeBodySetpointRockTest ready | out=%s base=%s type=%s axis=%s velocity=%.3fm/s rate=%.1fHz",
-                output_topic_.c_str(),
-                use_manual_base_ ? "manual_base_ned" : local_position_topic_.c_str(),
-                trajectory_type_.c_str(), axis_.c_str(), fixed_velocity_m_s_, rate_hz_);
+            if (fixed_velocity_use_north_east_) {
+                RCLCPP_INFO(
+                    get_logger(),
+                    "WholeBodySetpointRockTest ready | out=%s base=%s type=%s axis=%s velocity_north=%.3fm/s velocity_east=%.3fm/s rate=%.1fHz",
+                    output_topic_.c_str(),
+                    use_manual_base_ ? "manual_base_ned" : local_position_topic_.c_str(),
+                    trajectory_type_.c_str(), axis_.c_str(), fixed_velocity_north_m_s_,
+                    fixed_velocity_east_m_s_, rate_hz_);
+            } else {
+                RCLCPP_INFO(
+                    get_logger(),
+                    "WholeBodySetpointRockTest ready | out=%s base=%s type=%s axis=%s velocity=%.3fm/s rate=%.1fHz",
+                    output_topic_.c_str(),
+                    use_manual_base_ ? "manual_base_ned" : local_position_topic_.c_str(),
+                    trajectory_type_.c_str(), axis_.c_str(), fixed_velocity_m_s_, rate_hz_);
+            }
         } else {
             RCLCPP_INFO(
                 get_logger(),
@@ -115,6 +138,12 @@ class WholeBodySetpointRockTest : public rclcpp::Node {
             return 2;
         }
         return -1;
+    }
+
+    static bool isNorthEastAxis(const std::string & axis)
+    {
+        return axis == "north_east" || axis == "northeast" || axis == "ne" ||
+               axis == "xy" || axis == "horizontal" || axis == "both";
     }
 
     void handleVehicleLocalPosition(
@@ -155,28 +184,34 @@ class WholeBodySetpointRockTest : public rclcpp::Node {
             waveform_started_ = true;
         }
         const double t = (now_time - start_time_).seconds();
-        double offset = 0.0;
-        double velocity = 0.0;
-        double acceleration = 0.0;
+        auto target = base_ned_;
+        std::array<float, 3> velocity_ned{0.0f, 0.0f, 0.0f};
+        std::array<float, 3> acceleration_ned{0.0f, 0.0f, 0.0f};
         if (trajectory_type_ == "fixed_velocity") {
-            offset = fixed_velocity_m_s_ * t;
-            velocity = fixed_velocity_m_s_;
+            if (fixed_velocity_use_north_east_) {
+                target[0] += fixed_velocity_north_m_s_ * t;
+                target[1] += fixed_velocity_east_m_s_ * t;
+                velocity_ned[0] = static_cast<float>(fixed_velocity_north_m_s_);
+                velocity_ned[1] = static_cast<float>(fixed_velocity_east_m_s_);
+            } else {
+                const double offset = fixed_velocity_m_s_ * t;
+                target[static_cast<std::size_t>(axis_index_)] += offset;
+                velocity_ned[static_cast<std::size_t>(axis_index_)] =
+                    static_cast<float>(fixed_velocity_m_s_);
+            }
         } else {
             constexpr double kPi = 3.14159265358979323846;
             const double omega = 2.0 * kPi * frequency_hz_;
             const double phase = omega * t;
-            offset = amplitude_m_ * std::cos(phase);
-            velocity = -amplitude_m_ * omega * std::sin(phase);
-            acceleration = -amplitude_m_ * omega * omega * std::cos(phase);
+            const double offset = amplitude_m_ * std::cos(phase);
+            const double velocity = -amplitude_m_ * omega * std::sin(phase);
+            const double acceleration = -amplitude_m_ * omega * omega * std::cos(phase);
+            target[static_cast<std::size_t>(axis_index_)] += offset;
+            velocity_ned[static_cast<std::size_t>(axis_index_)] =
+                static_cast<float>(velocity);
+            acceleration_ned[static_cast<std::size_t>(axis_index_)] =
+                static_cast<float>(acceleration);
         }
-        auto target = base_ned_;
-        target[static_cast<std::size_t>(axis_index_)] += offset;
-        std::array<float, 3> velocity_ned{0.0f, 0.0f, 0.0f};
-        std::array<float, 3> acceleration_ned{0.0f, 0.0f, 0.0f};
-        velocity_ned[static_cast<std::size_t>(axis_index_)] =
-            static_cast<float>(velocity);
-        acceleration_ned[static_cast<std::size_t>(axis_index_)] =
-            static_cast<float>(acceleration);
 
         px4_msgs::msg::TrajectorySetpoint msg{};
         msg.timestamp = now().nanoseconds() / 1000;
@@ -203,8 +238,11 @@ class WholeBodySetpointRockTest : public rclcpp::Node {
     double amplitude_m_{0.2};
     double frequency_hz_{0.2};
     double fixed_velocity_m_s_{0.1};
+    double fixed_velocity_north_m_s_{0.0};
+    double fixed_velocity_east_m_s_{0.0};
     bool use_manual_base_{false};
     bool base_ready_{false};
+    bool fixed_velocity_use_north_east_{false};
     int axis_index_{1};
     std::array<double, 3> manual_base_ned_{0.0, 0.0, 0.0};
     std::array<double, 3> base_ned_{0.0, 0.0, 0.0};
