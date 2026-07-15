@@ -28,7 +28,7 @@ constexpr double Ts = 0.05;  // s
 constexpr double POS_ERROR_TOLERATE = 0.05;
 constexpr double YAW_ERROR_TOLERATE = 0.05;
 
-const std::vector<double> VEL_LIMIT = {2.0, 2.0, 1.0, YAW_VEL_LIMIT};
+const std::vector<double> VEL_LIMIT = {0.2, 0.2, 0.1, YAW_VEL_LIMIT};
 const std::vector<double> ACC_LIMIT = {1.0, 1.0, 1.0, YAW_ACC_LIMIT};
 const std::vector<double> JERK_LIMIT = {0.8, 0.8, 0.8, YAW_JERK_LIMIT};
 

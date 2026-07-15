@@ -41,7 +41,7 @@ uav_offboard_fsm:
     hold_adjust_max_z_step_m: 0.25
 
     # UAV_HOLD 调整段 Ruckig 平动速度上限；分量 <=0 表示沿用全局默认。
-    hold_adjust_max_velocity_xyz: [0.2, 0.2, 0.3]
+    hold_adjust_max_velocity_xyz: [0.2, 0.2, 0.1]
 
     # 外部任务状态中表示允许执行任务的字符串。
     mission_state_enabled_aliases: ["ENABLED", "RUNNING", "AUTO"]

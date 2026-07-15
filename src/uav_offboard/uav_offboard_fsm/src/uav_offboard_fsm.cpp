@@ -180,7 +180,7 @@ class UavOffboardFsm : public rclcpp::Node {
                                    cbg_fsm_);
         // 5Hz 持续向 FMU 重发当前 actuator 设定值；与 actuator_control 服务共用 cbg_service_，
         // 因二者都会触发 publish_vehicle_command，互斥执行避免与服务回调交叉。
-        actuator_timer_ = create_wall_timer(std::chrono::milliseconds(200),
+        actuator_timer_ = create_wall_timer(std::chrono::milliseconds(100),
                                             std::bind(&UavOffboardFsm::publishActuatorCommand, this),
                                             cbg_service_);
 
@@ -1243,7 +1243,7 @@ void UavOffboardFsm::handleActuatorControl(
     // close=0 时重置两个初始化周期，close=1 时取消尚未完成的初始化。
     actuator_close.store(request->close ? 1.0f : -1.0f);
     actuator_cut.store(request->cut ? 1.0f : -1.0f);
-    actuator_close_init_cycles_remaining.store(request->close ? 0 : 2);
+    actuator_close_init_cycles_remaining.store(request->close ? 0 : 0);
     response->success = true;
     RCLCPP_INFO(get_logger(),
                  LOG_COLOR_BLUE "ActuatorControl | close=%d cut=%d -> setpoint updated" LOG_COLOR_RESET,
@@ -1254,6 +1254,20 @@ void UavOffboardFsm::handleActuatorControl(
 void UavOffboardFsm::publishActuatorCommand()
 {
     if (!actuator_command_enabled_.load()) {
+        if (actuator_close_init_cycles_remaining.load() > 0) {
+            publish_vehicle_command(
+                px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_ACTUATOR,
+                0.0f,
+                -1.0f);
+            actuator_close_init_cycles_remaining.fetch_sub(1);
+            RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), log_throttle_ms_,
+            "Actuator command blocked init| %s",
+            manual_control_setpoint_received_.load()
+                ? "manual_control_setpoint aux1 >= 0.0 or invalid"
+                : "waiting for manual_control_setpoint aux1 < 0.0");
+            return;
+        }
         publish_vehicle_command(
         px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_ACTUATOR,
         -1.0f,
@@ -2326,19 +2340,19 @@ void UavOffboardFsm::handleDistanceSensor(const px4_msgs::msg::DistanceSensor::S
 void UavOffboardFsm::handleManualControlSetpoint(
     const px4_msgs::msg::ManualControlSetpoint::SharedPtr msg)
 {
-    const bool enabled = msg->valid && std::isfinite(msg->aux1) && msg->aux1 < 0.0f;
+    const bool enabled = msg->valid && std::isfinite(msg->aux3) && msg->aux3 < 0.0f;
     const bool was_received = manual_control_setpoint_received_.exchange(true);
     const bool was_enabled = actuator_command_enabled_.exchange(enabled);
     // 第一次收到 manual control 消息, 状态发生变化，比如从允许变成禁止，或者从禁止变成允许
     if (!was_received || was_enabled != enabled) {
         if (enabled) {
             RCLCPP_INFO(get_logger(),
-                        LOG_COLOR_GREEN "Actuator command gate enabled | aux1=%.2f" LOG_COLOR_RESET,
-                        msg->aux1);
+                        LOG_COLOR_GREEN "Actuator command gate enabled | aux3=%.2f" LOG_COLOR_RESET,
+                        msg->aux3);
         } else {
             RCLCPP_WARN(get_logger(),
-                        "Actuator command gate blocked | valid=%s aux1=%.2f",
-                        msg->valid ? "true" : "false", msg->aux1);
+                        "Actuator command gate blocked | valid=%s aux3=%.2f",
+                        msg->valid ? "true" : "false", msg->aux3);
         }
     }
 }
